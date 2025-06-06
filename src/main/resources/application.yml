@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: EtlEngine
+  datasource:
+    url: jdbc:sqlserver://localhost:1433;databaseName=SUPPORT;encrypt=true;trustServerCertificate=true;
+    username: sa
+    password: verYs3cret
+    driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
+  main:
+    banner-mode: off
+kafka:
+  bootstrap-servers: localhost:29092,localhost:39092,localhost:49092
+logging:
+  level:
+    root: INFO
