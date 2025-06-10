@@ -2,24 +2,26 @@ package ru.pospelov.etl.engine.steps.extractor;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.avro.generic.GenericRecord;
 import org.apache.kafka.clients.consumer.*;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.springframework.stereotype.Component;
+import ru.pospelov.etl.engine.config.KafkaClientFactory;
 import ru.pospelov.etl.engine.model.EtlJob;
-import ru.pospelov.etl.engine.model.Record;
+import ru.pospelov.etl.engine.model.EtlRecord;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 
-@Slf4j
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class KafkaExtractor implements Extractor {
 
-    private final KafkaConsumerFactory consumerFactory;
+    private final KafkaClientFactory consumerFactory;
 
     @Override
     public String getType() {
@@ -27,48 +29,50 @@ public class KafkaExtractor implements Extractor {
     }
 
     @Override
-    public Collection<Record> extract(EtlJob job) {
+    public Collection<EtlRecord> extract(EtlJob job) {
         String topic = job.getParam("topic").toString();
         long startMillis = (long) job.getParam("startTimestamp");
         long endMillis = (long) job.getParam("endTimestamp");
         int threadCount = (int) job.getParamOrDefault("threads", 4);
+        String format = String.valueOf(job.getParamOrDefault("format", "string")); // "string" или "avro"
 
-        Map<String, Object> consumerProps = consumerFactory.buildConsumerConfig("extractor-client");
-        List<Record> allRecords = Collections.synchronizedList(new ArrayList<>());
+        boolean isAvro = format.equalsIgnoreCase("avro");
 
-        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProps)) {
-            List<PartitionInfo> partitions = consumer.partitionsFor(topic);
+        Map<String, Object> consumerProps = consumerFactory.buildConsumerConfig("kafka-extractor", isAvro);
+        List<EtlRecord> allRecords = Collections.synchronizedList(new ArrayList<>());
+
+        try (KafkaConsumer<String, Object> metadataConsumer = new KafkaConsumer<>(consumerProps)) {
+            List<PartitionInfo> partitions = metadataConsumer.partitionsFor(topic);
             ExecutorService executor = Executors.newFixedThreadPool(threadCount);
             List<Future<?>> tasks = new ArrayList<>();
 
             for (PartitionInfo partition : partitions) {
                 tasks.add(executor.submit(() -> {
                     TopicPartition tp = new TopicPartition(partition.topic(), partition.partition());
-                    try (KafkaConsumer<String, String> partConsumer = new KafkaConsumer<>(consumerProps)) {
-                        partConsumer.assign(List.of(tp));
-
-                        Map<TopicPartition, OffsetAndTimestamp> offsets = partConsumer.offsetsForTimes(
-                                Map.of(tp, startMillis)
-                        );
-
+                    try (KafkaConsumer<String, Object> consumer = new KafkaConsumer<>(consumerProps)) {
+                        consumer.assign(List.of(tp));
+                        Map<TopicPartition, OffsetAndTimestamp> offsets = consumer.offsetsForTimes(Map.of(tp, startMillis));
                         OffsetAndTimestamp offsetAndTimestamp = offsets.get(tp);
                         if (offsetAndTimestamp == null) return;
 
-                        partConsumer.seek(tp, offsetAndTimestamp.offset());
+                        consumer.seek(tp, offsetAndTimestamp.offset());
 
                         while (true) {
-                            ConsumerRecords<String, String> records = partConsumer.poll(Duration.ofMillis(500));
+                            ConsumerRecords<String, Object> records = consumer.poll(Duration.ofMillis(500));
                             if (records.isEmpty()) break;
 
-                            for (ConsumerRecord<String, String> r : records.records(tp)) {
+                            for (ConsumerRecord<String, Object> r : records.records(tp)) {
                                 if (r.timestamp() > endMillis) return;
-                                Record rec = new Record(
+                                EtlRecord rec = new EtlRecord(
                                         Instant.ofEpochMilli(r.timestamp()),
                                         tp.toString(),
                                         r.offset()
                                 );
-                                rec.put("key", r.key());
+                                if (r.key() != null) {
+                                    rec.put("key", r.key());
+                                }
                                 rec.put("value", r.value());
+
                                 allRecords.add(rec);
                             }
                         }
@@ -79,7 +83,10 @@ public class KafkaExtractor implements Extractor {
             for (Future<?> task : tasks) {
                 task.get();
             }
+
             executor.shutdown();
+            executor.awaitTermination(1, TimeUnit.HOURS);
+
         } catch (Exception e) {
             log.error("Kafka extraction failed", e);
             throw new RuntimeException(e);
@@ -88,3 +95,4 @@ public class KafkaExtractor implements Extractor {
         return allRecords;
     }
 }
+

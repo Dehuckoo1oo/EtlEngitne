@@ -8,8 +8,15 @@ spring:
     driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
   main:
     banner-mode: off
+  sql.init:
+    mode: always
+    platform: sqlserver
 kafka:
   bootstrap-servers: localhost:29092,localhost:39092,localhost:49092
+  schema-registry-url: http://localhost:8081
 logging:
   level:
     root: INFO
+    org.apache.kafka: WARN
+    org.apache.kafka.clients.consumer: WARN
+    org.apache.kafka.common.utils.AppInfoParser: ERROR

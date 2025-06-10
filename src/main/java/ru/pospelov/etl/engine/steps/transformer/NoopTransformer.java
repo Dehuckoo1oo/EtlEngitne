@@ -2,7 +2,7 @@ package ru.pospelov.etl.engine.steps.transformer;
 
 import org.springframework.stereotype.Component;
 import ru.pospelov.etl.engine.model.EtlJob;
-import ru.pospelov.etl.engine.model.Record;
+import ru.pospelov.etl.engine.model.EtlRecord;
 
 import java.util.Collection;
 
@@ -10,8 +10,8 @@ import java.util.Collection;
 public class NoopTransformer implements Transformer {
 
     @Override
-    public Collection<Record> transform(Collection<Record> records, EtlJob job) {
-        return records;
+    public Collection<EtlRecord> transform(Collection<EtlRecord> etlRecords, EtlJob job) {
+        return etlRecords;
     }
 
     @Override
