@@ -19,6 +19,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -142,6 +143,186 @@ public class KafkaToSqlIntegrationTest {
         List<Map<String, Object>> results = jdbcTemplate.queryForList("SELECT * FROM SUPPORT.dbo.order_table");
         assertThat(results).isNotEmpty();
         System.out.println("✅ Записей загружено: " + results.size());
+    }
+
+    @Test
+    @SneakyThrows
+    void sqlToKafkaToSql_shouldTransferMillion() {
+        jdbcTemplate.execute("DROP TABLE IF EXISTS SUPPORT.dbo.order_table_src");
+        jdbcTemplate.execute("DROP TABLE IF EXISTS SUPPORT.dbo.order_table_dst");
+
+        jdbcTemplate.execute("CREATE TABLE SUPPORT.dbo.order_table_src ("
+                + "order_id NVARCHAR(64),"
+                + "customer_id NVARCHAR(64),"
+                + "order_date NVARCHAR(32),"
+                + "delivery_date NVARCHAR(32),"
+                + "status NVARCHAR(32),"
+                + "total_amount FLOAT,"
+                + "currency NVARCHAR(8),"
+                + "item_count INT,"
+                + "shipping_address NVARCHAR(MAX),"
+                + "billing_address NVARCHAR(MAX),"
+                + "shipping_zip NVARCHAR(16),"
+                + "billing_zip NVARCHAR(16),"
+                + "shipping_city NVARCHAR(64),"
+                + "billing_city NVARCHAR(64),"
+                + "shipping_country NVARCHAR(64),"
+                + "billing_country NVARCHAR(64),"
+                + "payment_method NVARCHAR(32),"
+                + "card_last_digits NVARCHAR(8),"
+                + "card_expiry NVARCHAR(16),"
+                + "ip_address NVARCHAR(64),"
+                + "user_agent NVARCHAR(MAX),"
+                + "campaign_id NVARCHAR(64),"
+                + "referrer_url NVARCHAR(MAX),"
+                + "device_type NVARCHAR(32),"
+                + "browser NVARCHAR(32),"
+                + "os NVARCHAR(32),"
+                + "coupon_code NVARCHAR(32),"
+                + "discount_amount FLOAT,"
+                + "loyalty_points_used INT,"
+                + "gift_wrap BIT,"
+                + "special_instructions NVARCHAR(MAX))");
+
+        jdbcTemplate.execute("CREATE TABLE SUPPORT.dbo.order_table_dst ("
+                + "order_id NVARCHAR(64),"
+                + "customer_id NVARCHAR(64),"
+                + "order_date NVARCHAR(32),"
+                + "delivery_date NVARCHAR(32),"
+                + "status NVARCHAR(32),"
+                + "total_amount FLOAT,"
+                + "currency NVARCHAR(8),"
+                + "item_count INT,"
+                + "shipping_address NVARCHAR(MAX),"
+                + "billing_address NVARCHAR(MAX),"
+                + "shipping_zip NVARCHAR(16),"
+                + "billing_zip NVARCHAR(16),"
+                + "shipping_city NVARCHAR(64),"
+                + "billing_city NVARCHAR(64),"
+                + "shipping_country NVARCHAR(64),"
+                + "billing_country NVARCHAR(64),"
+                + "payment_method NVARCHAR(32),"
+                + "card_last_digits NVARCHAR(8),"
+                + "card_expiry NVARCHAR(16),"
+                + "ip_address NVARCHAR(64),"
+                + "user_agent NVARCHAR(MAX),"
+                + "campaign_id NVARCHAR(64),"
+                + "referrer_url NVARCHAR(MAX),"
+                + "device_type NVARCHAR(32),"
+                + "browser NVARCHAR(32),"
+                + "os NVARCHAR(32),"
+                + "coupon_code NVARCHAR(32),"
+                + "discount_amount FLOAT,"
+                + "loyalty_points_used INT,"
+                + "gift_wrap BIT,"
+                + "special_instructions NVARCHAR(MAX))");
+
+        String insertSql = "INSERT INTO SUPPORT.dbo.order_table_src " +
+                "(order_id, customer_id, order_date, delivery_date, status, total_amount, currency, item_count, " +
+                "shipping_address, billing_address, shipping_zip, billing_zip, shipping_city, billing_city, " +
+                "shipping_country, billing_country, payment_method, card_last_digits, card_expiry, ip_address, " +
+                "user_agent, campaign_id, referrer_url, device_type, browser, os, coupon_code, discount_amount, " +
+                "loyalty_points_used, gift_wrap, special_instructions) " +
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+
+        int batchSize = 1000;
+        List<Object[]> batchArgs = new ArrayList<>(batchSize);
+
+        for (int i = 0; i < 1_000_000; i++) {
+            Object[] params = new Object[]{
+                    "ORD-" + i,
+                    "CUST-" + i,
+                    "2025-06-09",
+                    "2025-06-10",
+                    "PAID",
+                    250.0,
+                    "USD",
+                    3,
+                    "123 Avro Lane",
+                    "456 Json Blvd",
+                    "90210",
+                    "10001",
+                    "LA",
+                    "NYC",
+                    "USA",
+                    "USA",
+                    "card",
+                    "1234",
+                    "12/27",
+                    "10.0.0.1",
+                    "JUnit",
+                    "CAMP123",
+                    "http://test.local",
+                    "mobile",
+                    "chrome",
+                    "android",
+                    "DISCOUNT",
+                    15.0,
+                    20,
+                    1,
+                    "None"
+            };
+
+            batchArgs.add(params);
+
+            if (batchArgs.size() == batchSize) {
+                jdbcTemplate.batchUpdate(insertSql, batchArgs);
+                batchArgs.clear(); // очищаем список для следующей порции
+            }
+        }
+
+        // если остались "хвостовые" записи
+        if (!batchArgs.isEmpty()) {
+            jdbcTemplate.batchUpdate(insertSql, batchArgs);
+        }
+
+
+        Schema schema = fetchSchemaFromRegistry("order-events-value");
+
+        EtlJob dump = new EtlJob(
+                "sql-to-kafka",
+                "SELECT * FROM SUPPORT.dbo.order_table_src",
+                null,
+                Map.of(
+                        "extractorType", "jdbc",
+                        "transformerType", "record-to-avro",
+                        "loaderType", "kafka",
+                        "format", "avro",
+                        "topic", "order-events-bulk",
+                        "threads", 8,
+                        "batchSize", 100_000,
+                        "avroSchema", schema
+                )
+        );
+
+        pipelineFactory.create(dump).run(dump);
+
+        List<Map<String, Object>> results = jdbcTemplate.queryForList("SELECT COUNT(*) cnt FROM SUPPORT.dbo.order_table_src");
+        int count = ((Number) results.get(0).get("cnt")).intValue();
+        assertThat(count).isEqualTo(1_000_000);
+
+        EtlJob load = new EtlJob(
+                "bulk-avro-to-sql",
+                null,
+                "SUPPORT.dbo.order_table_dst",
+                Map.of(
+                        "extractorType", "kafka",
+                        "format", "avro",
+                        "transformerType", "avro",
+                        "loaderType", "fast-sql",
+                        "topic", "order-events-bulk",
+                        "startTimestamp", Instant.now().minusSeconds(600).toEpochMilli(),
+                        "endTimestamp", Instant.now().toEpochMilli(),
+                        "batchSize", 100_000,
+                        "threads", 8
+                )
+        );
+
+        pipelineFactory.create(load).run(load);
+
+        results = jdbcTemplate.queryForList("SELECT COUNT(*) cnt FROM SUPPORT.dbo.order_table_dst");
+        count = ((Number) results.get(0).get("cnt")).intValue();
+        assertThat(count).isEqualTo(1_000_000);
     }
 
 
