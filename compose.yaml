@@ -229,7 +229,7 @@ services:
               schema-registry:
                 url: "http://schema-registry:8081"
           security:
-            default-group: reader
+            default-group: admin
             basic-auth:
               - username: "test"
                 password: "test"

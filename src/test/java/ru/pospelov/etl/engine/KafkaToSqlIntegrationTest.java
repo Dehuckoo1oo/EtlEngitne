@@ -47,7 +47,7 @@ public class KafkaToSqlIntegrationTest {
         try (Producer<String, String> producer = kafkaClientFactory.createProducer(false)) {
             producer.send(new ProducerRecord<>(
                     "etl_test_topic",
-                    "user-123",      // ключ
+                    null,      // ключ
                     "hello world"    // значение
             )).get(); // дожидаемся отправки
         } catch (Exception e) {
@@ -160,8 +160,8 @@ public class KafkaToSqlIntegrationTest {
                 + "total_amount FLOAT,"
                 + "currency NVARCHAR(8),"
                 + "item_count INT,"
-                + "shipping_address NVARCHAR(MAX),"
-                + "billing_address NVARCHAR(MAX),"
+                + "shipping_address NVARCHAR(800),"
+                + "billing_address NVARCHAR(800),"
                 + "shipping_zip NVARCHAR(16),"
                 + "billing_zip NVARCHAR(16),"
                 + "shipping_city NVARCHAR(64),"
@@ -172,9 +172,9 @@ public class KafkaToSqlIntegrationTest {
                 + "card_last_digits NVARCHAR(8),"
                 + "card_expiry NVARCHAR(16),"
                 + "ip_address NVARCHAR(64),"
-                + "user_agent NVARCHAR(MAX),"
+                + "user_agent NVARCHAR(800),"
                 + "campaign_id NVARCHAR(64),"
-                + "referrer_url NVARCHAR(MAX),"
+                + "referrer_url NVARCHAR(800),"
                 + "device_type NVARCHAR(32),"
                 + "browser NVARCHAR(32),"
                 + "os NVARCHAR(32),"
@@ -182,7 +182,7 @@ public class KafkaToSqlIntegrationTest {
                 + "discount_amount FLOAT,"
                 + "loyalty_points_used INT,"
                 + "gift_wrap BIT,"
-                + "special_instructions NVARCHAR(MAX))");
+                + "special_instructions NVARCHAR(800))");
 
         jdbcTemplate.execute("CREATE TABLE SUPPORT.dbo.order_table_dst ("
                 + "order_id NVARCHAR(64),"
@@ -193,8 +193,8 @@ public class KafkaToSqlIntegrationTest {
                 + "total_amount FLOAT,"
                 + "currency NVARCHAR(8),"
                 + "item_count INT,"
-                + "shipping_address NVARCHAR(MAX),"
-                + "billing_address NVARCHAR(MAX),"
+                + "shipping_address NVARCHAR(800),"
+                + "billing_address NVARCHAR(800),"
                 + "shipping_zip NVARCHAR(16),"
                 + "billing_zip NVARCHAR(16),"
                 + "shipping_city NVARCHAR(64),"
@@ -205,9 +205,9 @@ public class KafkaToSqlIntegrationTest {
                 + "card_last_digits NVARCHAR(8),"
                 + "card_expiry NVARCHAR(16),"
                 + "ip_address NVARCHAR(64),"
-                + "user_agent NVARCHAR(MAX),"
+                + "user_agent NVARCHAR(800),"
                 + "campaign_id NVARCHAR(64),"
-                + "referrer_url NVARCHAR(MAX),"
+                + "referrer_url NVARCHAR(800),"
                 + "device_type NVARCHAR(32),"
                 + "browser NVARCHAR(32),"
                 + "os NVARCHAR(32),"
@@ -215,7 +215,7 @@ public class KafkaToSqlIntegrationTest {
                 + "discount_amount FLOAT,"
                 + "loyalty_points_used INT,"
                 + "gift_wrap BIT,"
-                + "special_instructions NVARCHAR(MAX))");
+                + "special_instructions NVARCHAR(800))");
 
         String insertSql = "INSERT INTO SUPPORT.dbo.order_table_src " +
                 "(order_id, customer_id, order_date, delivery_date, status, total_amount, currency, item_count, " +
@@ -339,4 +339,296 @@ public class KafkaToSqlIntegrationTest {
         return new Schema.Parser().parse(rawSchema);
     }
 
+    @Test
+    void sqlTableToKafkaAndBack_shouldTransferMillionRows() {
+        jdbcTemplate.execute("IF OBJECT_ID('SUPPORT.dbo.order_src', 'U') IS NOT NULL DROP TABLE SUPPORT.dbo.order_src");
+        jdbcTemplate.execute("IF OBJECT_ID('SUPPORT.dbo.order_dst', 'U') IS NOT NULL DROP TABLE SUPPORT.dbo.order_dst");
+
+        jdbcTemplate.execute("IF EXISTS (SELECT * FROM sys.partition_schemes WHERE name='ps_bucket') DROP PARTITION SCHEME ps_bucket");
+        jdbcTemplate.execute("IF EXISTS (SELECT * FROM sys.partition_functions WHERE name='pf_bucket') DROP PARTITION FUNCTION pf_bucket");
+
+        StringBuilder pf = new StringBuilder(1024);
+        pf.append("CREATE PARTITION FUNCTION pf_bucket(int) AS RANGE LEFT FOR VALUES (0");
+        for (int i = 1; i < 72; i++) pf.append(',').append(i);
+        pf.append(')');
+        jdbcTemplate.execute(pf.toString());
+        jdbcTemplate.execute("CREATE PARTITION SCHEME ps_bucket AS PARTITION pf_bucket ALL TO ([PRIMARY])");
+
+        jdbcTemplate.execute("CREATE TABLE SUPPORT.dbo.order_src (" +
+                "order_id NVARCHAR(64)," +
+                "customer_id NVARCHAR(64)," +
+                "order_date NVARCHAR(32)," +
+                "delivery_date NVARCHAR(32)," +
+                "status NVARCHAR(32)," +
+                "total_amount FLOAT," +
+                "currency NVARCHAR(8)," +
+                "item_count INT," +
+                "shipping_address NVARCHAR(800)," +
+                "billing_address NVARCHAR(800)," +
+                "shipping_zip NVARCHAR(16)," +
+                "billing_zip NVARCHAR(16)," +
+                "shipping_city NVARCHAR(64)," +
+                "billing_city NVARCHAR(64)," +
+                "shipping_country NVARCHAR(64)," +
+                "billing_country NVARCHAR(64)," +
+                "payment_method NVARCHAR(32)," +
+                "card_last_digits NVARCHAR(8)," +
+                "card_expiry NVARCHAR(16)," +
+                "ip_address NVARCHAR(64)," +
+                "user_agent NVARCHAR(800)," +
+                "campaign_id NVARCHAR(64)," +
+                "referrer_url NVARCHAR(800)," +
+                "device_type NVARCHAR(32)," +
+                "browser NVARCHAR(32)," +
+                "os NVARCHAR(32)," +
+                "coupon_code NVARCHAR(32)," +
+                "discount_amount FLOAT," +
+                "loyalty_points_used INT," +
+                "gift_wrap BIT," +
+                "special_instructions NVARCHAR(800)," +
+                "bucket AS (ABS(CHECKSUM(order_id)) % 72) PERSISTED" +
+                ") ON ps_bucket(bucket)");
+
+        jdbcTemplate.execute("CREATE TABLE SUPPORT.dbo.order_dst (" +
+                "order_id NVARCHAR(64)," +
+                "customer_id NVARCHAR(64)," +
+                "order_date NVARCHAR(32)," +
+                "delivery_date NVARCHAR(32)," +
+                "status NVARCHAR(32)," +
+                "total_amount FLOAT," +
+                "currency NVARCHAR(8)," +
+                "item_count INT," +
+                "shipping_address NVARCHAR(800)," +
+                "billing_address NVARCHAR(800)," +
+                "shipping_zip NVARCHAR(16)," +
+                "billing_zip NVARCHAR(16)," +
+                "shipping_city NVARCHAR(64)," +
+                "billing_city NVARCHAR(64)," +
+                "shipping_country NVARCHAR(64)," +
+                "billing_country NVARCHAR(64)," +
+                "payment_method NVARCHAR(32)," +
+                "card_last_digits NVARCHAR(8)," +
+                "card_expiry NVARCHAR(16)," +
+                "ip_address NVARCHAR(64)," +
+                "user_agent NVARCHAR(800)," +
+                "campaign_id NVARCHAR(64)," +
+                "referrer_url NVARCHAR(800)," +
+                "device_type NVARCHAR(32)," +
+                "browser NVARCHAR(32)," +
+                "os NVARCHAR(32)," +
+                "coupon_code NVARCHAR(32)," +
+                "discount_amount FLOAT," +
+                "loyalty_points_used INT," +
+                "gift_wrap BIT," +
+                "special_instructions NVARCHAR(800)," +
+                "bucket AS (ABS(CHECKSUM(order_id)) % 72) PERSISTED" +
+                ") ON ps_bucket(bucket)");
+
+        String insertSql = "INSERT INTO SUPPORT.dbo.order_src " +
+                "(order_id, customer_id, order_date, delivery_date, status, total_amount, currency, item_count, " +
+                "shipping_address, billing_address, shipping_zip, billing_zip, shipping_city, billing_city, shipping_country, billing_country, " +
+                "payment_method, card_last_digits, card_expiry, ip_address, user_agent, campaign_id, referrer_url, device_type, browser, os, " +
+                "coupon_code, discount_amount, loyalty_points_used, gift_wrap, special_instructions) " +
+                "VALUES (?, 'CUST', '2025-06-09', '2025-06-10', 'PAID', 250.0, 'USD', 3, '123 Avro Lane', '456 Json Blvd', '90210', '10001', 'LA', 'NYC', 'USA', 'USA', " +
+                "'card', '1234', '12/27', '10.0.0.1', 'JUnit', 'CAMP123', 'http://test.local', 'mobile', 'chrome', 'android', 'DISCOUNT', 15.0, 20, 1, 'None')";
+
+        int batchSize = 1_000;
+        List<Object[]> params = new ArrayList<>(batchSize);
+        for (int i = 1; i <= 1_000_000; i++) {
+            params.add(new Object[]{"ORD-" + i});
+            if (params.size() == batchSize) {
+                jdbcTemplate.batchUpdate(insertSql, params);
+                params.clear();
+            }
+        }
+        if (!params.isEmpty()) {
+            jdbcTemplate.batchUpdate(insertSql, params);
+        }
+
+        Schema schema = null;
+        try {
+            schema = fetchSchemaFromRegistry("order-events-value");
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        EtlJob toKafka = new EtlJob(
+                "sql-to-kafka",
+                "SELECT * FROM SUPPORT.dbo.order_src",
+                null,
+                Map.ofEntries(
+                        Map.entry("extractorType", "sql"),
+                        Map.entry("loaderType", "kafka"),
+                        Map.entry("transformerType", "noop"),
+                        Map.entry("topic", "order-events-test"),
+                        Map.entry("format", "avro"),
+                        Map.entry("threads", 8),
+                        Map.entry("batchSize", 100_000),
+                        Map.entry("avroSchema", schema.toString()),
+                        Map.entry("keyColumn", "order_id"),
+                        Map.entry("partitionColumn", "bucket"),
+                        Map.entry("partitions", 72)
+                )
+        );
+
+        pipelineFactory.create(toKafka).run(toKafka);
+
+        EtlJob fromKafka = new EtlJob(
+                "avro-to-sql",
+                null,
+                "SUPPORT.dbo.order_dst",
+                Map.of(
+                        "extractorType", "kafka",
+                        "format", "avro",
+                        "transformerType", "avro",
+                        "loaderType", "fast-sql",
+                        "topic", "order-events-test",
+                        "startTimestamp", Instant.now().minusSeconds(600).toEpochMilli(),
+                        "endTimestamp", Instant.now().toEpochMilli(),
+                        "batchSize", 100_000,
+                        "threads", 8
+                )
+        );
+
+        pipelineFactory.create(fromKafka).run(fromKafka);
+
+        Integer cnt = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM SUPPORT.dbo.order_dst", Integer.class);
+        assertThat(cnt).isEqualTo(10_000);
+    }
+
+
+    @Test
+    void sqlTableToKafka_shouldTransferMillionRows() {
+        jdbcTemplate.execute("IF OBJECT_ID('SUPPORT.dbo.order_src', 'U') IS NOT NULL DROP TABLE SUPPORT.dbo.order_src");
+        jdbcTemplate.execute("IF OBJECT_ID('SUPPORT.dbo.order_dst', 'U') IS NOT NULL DROP TABLE SUPPORT.dbo.order_dst");
+
+        jdbcTemplate.execute("IF EXISTS (SELECT * FROM sys.partition_schemes WHERE name='ps_bucket') DROP PARTITION SCHEME ps_bucket");
+        jdbcTemplate.execute("IF EXISTS (SELECT * FROM sys.partition_functions WHERE name='pf_bucket') DROP PARTITION FUNCTION pf_bucket");
+
+        StringBuilder pf = new StringBuilder(1024);
+        pf.append("CREATE PARTITION FUNCTION pf_bucket(int) AS RANGE LEFT FOR VALUES (0");
+        for (int i = 1; i < 72; i++) pf.append(',').append(i);
+        pf.append(')');
+        jdbcTemplate.execute(pf.toString());
+        jdbcTemplate.execute("CREATE PARTITION SCHEME ps_bucket AS PARTITION pf_bucket ALL TO ([PRIMARY])");
+
+        jdbcTemplate.execute("CREATE TABLE SUPPORT.dbo.order_src (" +
+                "order_id NVARCHAR(64)," +
+                "customer_id NVARCHAR(64)," +
+                "order_date NVARCHAR(32)," +
+                "delivery_date NVARCHAR(32)," +
+                "status NVARCHAR(32)," +
+                "total_amount FLOAT," +
+                "currency NVARCHAR(8)," +
+                "item_count INT," +
+                "shipping_address NVARCHAR(800)," +
+                "billing_address NVARCHAR(800)," +
+                "shipping_zip NVARCHAR(16)," +
+                "billing_zip NVARCHAR(16)," +
+                "shipping_city NVARCHAR(64)," +
+                "billing_city NVARCHAR(64)," +
+                "shipping_country NVARCHAR(64)," +
+                "billing_country NVARCHAR(64)," +
+                "payment_method NVARCHAR(32)," +
+                "card_last_digits NVARCHAR(8)," +
+                "card_expiry NVARCHAR(16)," +
+                "ip_address NVARCHAR(64)," +
+                "user_agent NVARCHAR(800)," +
+                "campaign_id NVARCHAR(64)," +
+                "referrer_url NVARCHAR(800)," +
+                "device_type NVARCHAR(32)," +
+                "browser NVARCHAR(32)," +
+                "os NVARCHAR(32)," +
+                "coupon_code NVARCHAR(32)," +
+                "discount_amount FLOAT," +
+                "loyalty_points_used INT," +
+                "gift_wrap BIT," +
+                "special_instructions NVARCHAR(800)," +
+                "bucket AS (ABS(CHECKSUM(order_id)) % 72) PERSISTED" +
+                ") ON ps_bucket(bucket)");
+
+        jdbcTemplate.execute("CREATE TABLE SUPPORT.dbo.order_dst (" +
+                "order_id NVARCHAR(64)," +
+                "customer_id NVARCHAR(64)," +
+                "order_date NVARCHAR(32)," +
+                "delivery_date NVARCHAR(32)," +
+                "status NVARCHAR(32)," +
+                "total_amount FLOAT," +
+                "currency NVARCHAR(8)," +
+                "item_count INT," +
+                "shipping_address NVARCHAR(800)," +
+                "billing_address NVARCHAR(800)," +
+                "shipping_zip NVARCHAR(16)," +
+                "billing_zip NVARCHAR(16)," +
+                "shipping_city NVARCHAR(64)," +
+                "billing_city NVARCHAR(64)," +
+                "shipping_country NVARCHAR(64)," +
+                "billing_country NVARCHAR(64)," +
+                "payment_method NVARCHAR(32)," +
+                "card_last_digits NVARCHAR(8)," +
+                "card_expiry NVARCHAR(16)," +
+                "ip_address NVARCHAR(64)," +
+                "user_agent NVARCHAR(800)," +
+                "campaign_id NVARCHAR(64)," +
+                "referrer_url NVARCHAR(800)," +
+                "device_type NVARCHAR(32)," +
+                "browser NVARCHAR(32)," +
+                "os NVARCHAR(32)," +
+                "coupon_code NVARCHAR(32)," +
+                "discount_amount FLOAT," +
+                "loyalty_points_used INT," +
+                "gift_wrap BIT," +
+                "special_instructions NVARCHAR(800)," +
+                "bucket AS (ABS(CHECKSUM(order_id)) % 72) PERSISTED" +
+                ") ON ps_bucket(bucket)");
+
+        String insertSql = "INSERT INTO SUPPORT.dbo.order_src " +
+                "(order_id, customer_id, order_date, delivery_date, status, total_amount, currency, item_count, " +
+                "shipping_address, billing_address, shipping_zip, billing_zip, shipping_city, billing_city, shipping_country, billing_country, " +
+                "payment_method, card_last_digits, card_expiry, ip_address, user_agent, campaign_id, referrer_url, device_type, browser, os, " +
+                "coupon_code, discount_amount, loyalty_points_used, gift_wrap, special_instructions) " +
+                "VALUES (?, 'CUST', '2025-06-09', '2025-06-10', 'PAID', 250.0, 'USD', 3, '123 Avro Lane', '456 Json Blvd', '90210', '10001', 'LA', 'NYC', 'USA', 'USA', " +
+                "'card', '1234', '12/27', '10.0.0.1', 'JUnit', 'CAMP123', 'http://test.local', 'mobile', 'chrome', 'android', 'DISCOUNT', 15.0, 20, 1, 'None')";
+
+        int batchSize = 100_000;
+        List<Object[]> params = new ArrayList<>(batchSize);
+        for (int i = 1; i <= 1_000_000; i++) {
+            params.add(new Object[]{"ORD-" + i});
+            if (params.size() == batchSize) {
+                jdbcTemplate.batchUpdate(insertSql, params);
+                params.clear();
+            }
+        }
+        if (!params.isEmpty()) {
+            jdbcTemplate.batchUpdate(insertSql, params);
+        }
+
+        Schema schema = null;
+        try {
+            schema = fetchSchemaFromRegistry("order-events-value");
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        EtlJob toKafka = new EtlJob(
+                "sql-to-kafka",
+                "SELECT * FROM SUPPORT.dbo.order_src",
+                null,
+                Map.ofEntries(
+                        Map.entry("extractorType", "sql"),
+                        Map.entry("loaderType", "kafka"),
+                        Map.entry("transformerType", "noop"),
+                        Map.entry("topic", "order-events-value"),
+                        Map.entry("format", "avro"),
+                        Map.entry("threads", 8),
+                        Map.entry("batchSize", 100_000),
+                        Map.entry("avroSchema", schema.toString()),
+                        Map.entry("keyColumn", "order_id"),
+                        Map.entry("partitionColumn", "bucket"),
+                        Map.entry("partitions", 72)
+                )
+        );
+
+        pipelineFactory.create(toKafka).run(toKafka);
+    }
 }

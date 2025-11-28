@@ -38,7 +38,7 @@ public class JdbcLoader implements Loader {
         String columnNames = String.join(", ", columns);
         String placeholders = String.join(", ", Collections.nCopies(columns.size(), "?"));
         String sql = String.format("INSERT INTO %s (%s) VALUES (%s)", targetTable, columnNames, placeholders);
-
+        log.info("Executing SQL: {}", sql);
         int batchSize = (int) job.getParamOrDefault("batchSize", 1000);
         int threadCount = (int) job.getParamOrDefault("threads", 4);
 
