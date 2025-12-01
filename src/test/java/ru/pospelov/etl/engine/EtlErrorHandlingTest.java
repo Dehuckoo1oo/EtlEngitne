@@ -111,12 +111,12 @@ class EtlErrorHandlingTest {
 
     private static class FixedExtractor implements Extractor {
         @Override
-        public Collection<EtlRecord> extract(EtlJob job) {
+        public void extract(EtlJob job, java.util.function.Consumer<Collection<EtlRecord>> batchConsumer) {
             EtlRecord first = new EtlRecord(Instant.now(), "test", 1L);
             first.put("value", "ok");
             EtlRecord second = new EtlRecord(Instant.now(), "test", 2L);
             second.put("value", "bad");
-            return List.of(first, second);
+            batchConsumer.accept(List.of(first, second));
         }
 
         @Override

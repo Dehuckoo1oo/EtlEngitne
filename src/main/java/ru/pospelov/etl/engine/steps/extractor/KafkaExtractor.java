@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.Consumer;
 
 @Component
 @RequiredArgsConstructor
@@ -34,7 +35,7 @@ public class KafkaExtractor implements Extractor {
     }
 
     @Override
-    public Collection<EtlRecord> extract(EtlJob job) {
+    public void extract(EtlJob job, Consumer<Collection<EtlRecord>> batchConsumer) {
         String topic = Objects.toString(job.getParam("topic"), "");
         if (topic.isBlank()) {
             throw new ExtractionException("Kafka topic is required", job.getJobId());
@@ -47,11 +48,11 @@ public class KafkaExtractor implements Extractor {
         }
 
         int threadCount = ((Number) job.getParamOrDefault("threads", 4)).intValue();
+        int streamBatchSize = (int) job.getParamOrDefault("streamBatchSize", 50000);
         String format = Objects.toString(job.getParamOrDefault("format", "string"), "string");
         boolean isAvro = format.equalsIgnoreCase("avro");
 
         Map<String, Object> consumerProps = consumerFactory.buildConsumerConfig("kafka-extractor", isAvro);
-        List<EtlRecord> allRecords = Collections.synchronizedList(new ArrayList<>());
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         List<Future<?>> tasks = new ArrayList<>();
 
@@ -59,13 +60,13 @@ public class KafkaExtractor implements Extractor {
             List<PartitionInfo> partitions = metadataConsumer.partitionsFor(topic);
             if (partitions == null || partitions.isEmpty()) {
                 log.warn("No partitions found for topic {}", topic);
-                return List.of();
+                return;
             }
 
             for (PartitionInfo partition : partitions) {
                 TopicPartition tp = new TopicPartition(partition.topic(), partition.partition());
                 tasks.add(executor.submit(() ->
-                        consumePartition(job.getJobId(), consumerProps, tp, startMillis, endMillis, allRecords)
+                        consumePartition(job.getJobId(), consumerProps, tp, startMillis, endMillis, streamBatchSize, batchConsumer)
                 ));
             }
 
@@ -74,8 +75,6 @@ public class KafkaExtractor implements Extractor {
             if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
                 throw new ExtractionException("Kafka extractor did not finish within timeout", job.getJobId());
             }
-
-            return allRecords;
         } catch (EtlException e) {
             throw e;
         } catch (InterruptedException e) {
@@ -95,7 +94,8 @@ public class KafkaExtractor implements Extractor {
             TopicPartition tp,
             long startMillis,
             long endMillis,
-            List<EtlRecord> target
+            int streamBatchSize,
+            Consumer<Collection<EtlRecord>> batchConsumer
     ) {
         try (KafkaConsumer<String, Object> consumer = new KafkaConsumer<>(consumerProps)) {
             consumer.assign(List.of(tp));
@@ -106,6 +106,7 @@ public class KafkaExtractor implements Extractor {
             }
 
             consumer.seek(tp, offsetAndTimestamp.offset());
+            List<EtlRecord> currentBatch = new ArrayList<>(streamBatchSize);
 
             while (true) {
                 ConsumerRecords<String, Object> records = consumer.poll(Duration.ofMillis(500));
@@ -115,8 +116,13 @@ public class KafkaExtractor implements Extractor {
 
                 for (ConsumerRecord<String, Object> record : records.records(tp)) {
                     if (record.timestamp() > endMillis) {
+                        // Send remaining batch before exiting
+                        if (!currentBatch.isEmpty()) {
+                            batchConsumer.accept(currentBatch);
+                        }
                         return;
                     }
+                    
                     EtlRecord etlRecord = new EtlRecord(
                             Instant.ofEpochMilli(record.timestamp()),
                             tp.toString(),
@@ -127,8 +133,19 @@ public class KafkaExtractor implements Extractor {
                     }
                     etlRecord.put("value", record.value());
 
-                    target.add(etlRecord);
+                    currentBatch.add(etlRecord);
+                    
+                    // When batch is full, send it for processing immediately
+                    if (currentBatch.size() >= streamBatchSize) {
+                        batchConsumer.accept(new ArrayList<>(currentBatch));
+                        currentBatch.clear();
+                    }
                 }
+            }
+            
+            // Send remaining records
+            if (!currentBatch.isEmpty()) {
+                batchConsumer.accept(currentBatch);
             }
         } catch (Exception e) {
             throw new ExtractionException(
@@ -163,4 +180,3 @@ public class KafkaExtractor implements Extractor {
         throw new ExtractionException("Parameter '%s' must be a number".formatted(key), job.getJobId());
     }
 }
-

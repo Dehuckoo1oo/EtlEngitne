@@ -138,10 +138,10 @@ class EtlPipelineMetricsTest {
 
     private static class FixedExtractor implements Extractor {
         @Override
-        public Collection<EtlRecord> extract(EtlJob job) {
+        public void extract(EtlJob job, java.util.function.Consumer<Collection<EtlRecord>> batchConsumer) {
             EtlRecord first = new EtlRecord(Instant.now(), "test", 1L);
             EtlRecord second = new EtlRecord(Instant.now(), "test", 2L);
-            return List.of(first, second);
+            batchConsumer.accept(List.of(first, second));
         }
 
         @Override
@@ -152,7 +152,7 @@ class EtlPipelineMetricsTest {
 
     private static class FailingExtractor implements Extractor {
         @Override
-        public Collection<EtlRecord> extract(EtlJob job) {
+        public void extract(EtlJob job, java.util.function.Consumer<Collection<EtlRecord>> batchConsumer) {
             throw new ExtractionException("boom", job.getJobId());
         }
 

@@ -140,7 +140,7 @@ class JobValidationTest {
         Map<String, Object> params = new HashMap<>();
         params.put("extractorType", "sql");
         params.put("query", "SELECT * FROM table");
-        params.put("batchSize", "not-a-number");
+        params.put("streamBatchSize", "not-a-number");
         EtlJob job = new EtlJob("test-job", "SELECT * FROM table", null, params);
         
         ValidationResult result = new ValidationResult();
@@ -148,7 +148,7 @@ class JobValidationTest {
         
         assertThat(result.hasErrors()).isTrue();
         assertThat(result.getErrors()).anyMatch(e -> 
-            e.getField().equals("batchSize") && e.getMessage().contains("must be a number"));
+            e.getField().equals("streamBatchSize") && e.getMessage().contains("must be a number"));
     }
 
     @Test

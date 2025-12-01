@@ -18,11 +18,10 @@ import ru.pospelov.etl.engine.steps.loader.Loader;
 import ru.pospelov.etl.engine.steps.transformer.Transformer;
 import ru.pospelov.etl.engine.validation.JobValidator;
 
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Component
 public class EtlPipelineFactory {
@@ -56,7 +55,7 @@ public class EtlPipelineFactory {
         Transformer transformer = requireTransformer(job, transformerType);
         Loader loader = requireLoader(job, loaderType);
 
-        return new StructuredEtlPipeline(extractor, transformer, loader, deadLetterQueue, metricsCollector);
+        return new StreamingEtlPipeline(extractor, transformer, loader, deadLetterQueue, metricsCollector);
     }
 
     private static String requireType(EtlJob job, String key) {
@@ -91,9 +90,14 @@ public class EtlPipelineFactory {
         return loader;
     }
 
-    private static final class StructuredEtlPipeline implements EtlPipeline {
+    /**
+     * Streaming ETL Pipeline that processes data in batches.
+     * Instead of loading all data into memory at once, it processes data batch-by-batch,
+     * significantly reducing memory footprint for large datasets.
+     */
+    private static final class StreamingEtlPipeline implements EtlPipeline {
 
-        private final Logger pipelineLog = LoggerFactory.getLogger(StructuredEtlPipeline.class);
+        private final Logger pipelineLog = LoggerFactory.getLogger(StreamingEtlPipeline.class);
 
         private final Extractor extractor;
         private final Transformer transformer;
@@ -102,7 +106,7 @@ public class EtlPipelineFactory {
         private final EtlMetrics metrics;
         private final CancellationToken cancellationToken = new CancellationToken();
 
-        private StructuredEtlPipeline(
+        private StreamingEtlPipeline(
                 Extractor extractor,
                 Transformer transformer,
                 Loader loader,
@@ -131,15 +135,67 @@ public class EtlPipelineFactory {
             Objects.requireNonNull(job, "job");
             cancellationToken.reset(); // Reset cancellation state for new execution
             metrics.onJobStatusChanged(job, EtlJobStatus.RUNNING);
+            
+            final AtomicInteger totalExtracted = new AtomicInteger(0);
+            final AtomicInteger totalTransformed = new AtomicInteger(0);
+            final AtomicInteger totalLoaded = new AtomicInteger(0);
+            final long startTimeNanos = System.nanoTime();
+            
             try {
                 cancellationToken.checkCancellation();
-                Collection<EtlRecord> extracted = extract(job);
+                metrics.onJobStatusChanged(job, EtlJobStatus.EXTRACTING);
+                metrics.onExtractStart(job);
+                
+                // Streaming pipeline: extract -> transform -> load in batches
+                extractor.extract(job, extractedBatch -> {
+                    try {
+                        cancellationToken.checkCancellation();
+                        
+                        int extractedCount = extractedBatch.size();
+                        totalExtracted.addAndGet(extractedCount);
+                        
+                        // Transform batch
+                        metrics.onJobStatusChanged(job, EtlJobStatus.TRANSFORMING);
+                        Collection<EtlRecord> transformedBatch = transformBatch(job, extractedBatch);
+                        
+                        int transformedCount = transformedBatch.size();
+                        totalTransformed.addAndGet(transformedCount);
+                        transformedBatch.forEach(record -> metrics.onRecordProcessed(job, record));
+                        
+                        cancellationToken.checkCancellation();
+                        
+                        // Load batch
+                        if (!transformedBatch.isEmpty()) {
+                            metrics.onJobStatusChanged(job, EtlJobStatus.LOADING);
+                            loadBatch(job, transformedBatch);
+                            totalLoaded.addAndGet(transformedCount);
+                        }
+                        
+                        cancellationToken.checkCancellation();
+                        
+                    } catch (CancellationException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        if (cancellationToken.isCancelled()) {
+                            throw new CancellationException("Execution was cancelled during batch processing", e);
+                        }
+                        throw e;
+                    }
+                });
+                
                 cancellationToken.checkCancellation();
-                Collection<EtlRecord> transformed = transform(job, extracted);
-                cancellationToken.checkCancellation();
-                load(job, transformed);
-                cancellationToken.checkCancellation();
+                
+                // Report final metrics
+                long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimeNanos);
+                metrics.onExtractComplete(job, totalExtracted.get(), elapsedMillis);
+                metrics.onTransformComplete(job, totalTransformed.get(), elapsedMillis);
+                metrics.onLoadComplete(job, totalLoaded.get(), elapsedMillis);
+                
                 metrics.onJobStatusChanged(job, EtlJobStatus.COMPLETED);
+                
+                pipelineLog.info("Job '{}' completed: extracted={}, transformed={}, loaded={}, time={}ms",
+                        job.getJobId(), totalExtracted.get(), totalTransformed.get(), totalLoaded.get(), elapsedMillis);
+                
             } catch (CancellationException e) {
                 metrics.onJobStatusChanged(job, EtlJobStatus.CANCELLED);
                 pipelineLog.info("Job '{}' execution was cancelled", job.getJobId());
@@ -154,32 +210,28 @@ public class EtlPipelineFactory {
             }
         }
 
-        private Collection<EtlRecord> extract(EtlJob job) {
-            cancellationToken.checkCancellation();
-            metrics.onJobStatusChanged(job, EtlJobStatus.EXTRACTING);
-            metrics.onExtractStart(job);
-            long startedAtNanos = System.nanoTime();
+        private Collection<EtlRecord> transformBatch(EtlJob job, Collection<EtlRecord> batch) {
+            if (batch.isEmpty()) {
+                return batch;
+            }
+            
             try {
-                Collection<EtlRecord> records = extractor.extract(job);
-                cancellationToken.checkCancellation();
-                Collection<EtlRecord> safeRecords = records == null ? List.of() : records;
-                metrics.onExtractComplete(job, safeRecords.size(), elapsedMillis(startedAtNanos));
-                return safeRecords;
+                return transformer.transform(batch, job);
             } catch (CancellationException e) {
                 throw e;
             } catch (EtlException e) {
                 if (cancellationToken.isCancelled()) {
-                    throw new CancellationException("Execution was cancelled during extraction", e);
+                    throw new CancellationException("Execution was cancelled during transformation", e);
                 }
                 metrics.onError(job, e);
                 deadLetterQueue.publish(e);
                 throw e;
             } catch (Exception e) {
                 if (cancellationToken.isCancelled()) {
-                    throw new CancellationException("Execution was cancelled during extraction", e);
+                    throw new CancellationException("Execution was cancelled during transformation", e);
                 }
-                ExtractionException wrapped = new ExtractionException(
-                        "Failed to extract records",
+                TransformationException wrapped = new TransformationException(
+                        "Failed to transform batch",
                         job.getJobId(),
                         null,
                         EtlErrorSeverity.CRITICAL,
@@ -191,69 +243,15 @@ public class EtlPipelineFactory {
             }
         }
 
-        private Collection<EtlRecord> transform(EtlJob job, Collection<EtlRecord> records) {
-            cancellationToken.checkCancellation();
-            Collection<EtlRecord> safeRecords = records == null ? List.of() : records;
-            metrics.onJobStatusChanged(job, EtlJobStatus.TRANSFORMING);
-            metrics.onTransformStart(job, safeRecords.size());
-            long startedAtNanos = System.nanoTime();
-            if (safeRecords.isEmpty()) {
-                metrics.onTransformComplete(job, 0, elapsedMillis(startedAtNanos));
-                return List.of();
-            }
-
-            List<EtlRecord> transformed = new ArrayList<>();
-            for (EtlRecord record : safeRecords) {
-                cancellationToken.checkCancellation(); // Check before processing each record
-                try {
-                    Collection<EtlRecord> result = transformer.transform(List.of(record), job);
-                    if (result != null && !result.isEmpty()) {
-                        transformed.addAll(result);
-                        result.forEach(created -> metrics.onRecordProcessed(job, created));
-                    }
-                } catch (CancellationException e) {
-                    throw e;
-                } catch (EtlException e) {
-                    if (cancellationToken.isCancelled()) {
-                        throw new CancellationException("Execution was cancelled during transformation", e);
-                    }
-                    handleStageException(job, e);
-                } catch (Exception e) {
-                    if (cancellationToken.isCancelled()) {
-                        throw new CancellationException("Execution was cancelled during transformation", e);
-                    }
-                    TransformationException wrapped = new TransformationException(
-                            "Failed to transform record with offset %s".formatted(record.getOffset()),
-                            job.getJobId(),
-                            record,
-                            EtlErrorSeverity.CRITICAL,
-                            e
-                    );
-                    handleStageException(job, wrapped);
-                }
-            }
-
-            cancellationToken.checkCancellation();
-            metrics.onTransformComplete(job, transformed.size(), elapsedMillis(startedAtNanos));
-            return transformed;
-        }
-
-        private void load(EtlJob job, Collection<EtlRecord> records) {
-            cancellationToken.checkCancellation();
-            Collection<EtlRecord> safeRecords = records == null ? List.of() : records;
-            metrics.onJobStatusChanged(job, EtlJobStatus.LOADING);
-            metrics.onLoadStart(job, safeRecords.size());
-            long startedAtNanos = System.nanoTime();
-            if (safeRecords.isEmpty()) {
-                metrics.onLoadComplete(job, 0, elapsedMillis(startedAtNanos));
+        private void loadBatch(EtlJob job, Collection<EtlRecord> batch) {
+            if (batch.isEmpty()) {
                 return;
             }
-
+            
             try {
                 cancellationToken.checkCancellation();
-                loader.load(safeRecords, job);
+                loader.load(batch, job);
                 cancellationToken.checkCancellation();
-                metrics.onLoadComplete(job, safeRecords.size(), elapsedMillis(startedAtNanos));
             } catch (CancellationException e) {
                 throw e;
             } catch (EtlException e) {
@@ -268,7 +266,7 @@ public class EtlPipelineFactory {
                     throw new CancellationException("Execution was cancelled during loading", e);
                 }
                 LoadingException wrapped = new LoadingException(
-                        "Failed to load records",
+                        "Failed to load batch",
                         job.getJobId(),
                         null,
                         EtlErrorSeverity.CRITICAL,
@@ -278,25 +276,6 @@ public class EtlPipelineFactory {
                 deadLetterQueue.publish(wrapped);
                 throw wrapped;
             }
-        }
-
-        private void handleStageException(EtlJob job, EtlException exception) {
-            metrics.onError(job, exception);
-            deadLetterQueue.publish(exception);
-            if (exception.isCritical() || exception.getRecord() == null) {
-                throw exception;
-            }
-
-            pipelineLog.warn(
-                    "Job '{}' - skipping record due to non-critical {} error: {}",
-                    job.getJobId(),
-                    exception.getStage(),
-                    exception.getMessage()
-            );
-        }
-
-        private static long elapsedMillis(long startedAtNanos) {
-            return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
         }
     }
 }

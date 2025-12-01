@@ -61,7 +61,7 @@ EtlJob job = new EtlJob(
         "endTimestamp", Instant.now().toEpochMilli(),                     // Конец периода
         
         // Параметры производительности
-        "batchSize", 10000,           // Размер батча
+        "streamBatchSize", 10000,           // Размер батча
         "threads", 4                  // Количество потоков
     )
 );
@@ -118,7 +118,7 @@ EtlJob job = new EtlJob(
         "topic", "orders-topic",
         "startTimestamp", Instant.now().minusSeconds(3600).toEpochMilli(),  // Последний час
         "endTimestamp", Instant.now().toEpochMilli(),
-        "batchSize", 100000,
+        "streamBatchSize", 100000,
         "threads", 8
     )
 );
@@ -155,7 +155,7 @@ EtlJob job = new EtlJob(
         "topic", "bulk-topic",
         "startTimestamp", Instant.now().minusSeconds(86400).toEpochMilli(),  // Последние 24 часа
         "endTimestamp", Instant.now().toEpochMilli(),
-        "batchSize", 100000,                  // Большой размер батча
+        "streamBatchSize", 100000,                  // Большой размер батча
         "threads", 8                          // Много потоков
     )
 );
@@ -177,7 +177,7 @@ EtlJob job = new EtlJob(
 | `extractorType` | String | Тип извлекателя: `"kafka"` | Обязательно |
 | `transformerType` | String | Тип трансформера: `"noop"`, `"avro"` | Обязательно |
 | `loaderType` | String | Тип загрузчика: `"sql"`, `"fast-sql"` | Обязательно |
-| `batchSize` | Integer | Размер батча для обработки | 1000 |
+| `streamBatchSize` | Integer | Размер батча для обработки | 1000 |
 | `threads` | Integer | Количество потоков | 4 |
 
 ### Параметры для Kafka Extractor
@@ -195,7 +195,7 @@ EtlJob job = new EtlJob(
 | Параметр | Тип | Описание | По умолчанию |
 |----------|-----|----------|--------------|
 | `targetTable` | String | Имя целевой таблицы | Обязательно |
-| `batchSize` | Integer | Размер батча для вставки | 1000 |
+| `streamBatchSize` | Integer | Размер батча для вставки | 1000 |
 | `threads` | Integer | Количество потоков | 4 |
 
 ## Примеры использования
@@ -234,7 +234,7 @@ EtlJob job = new EtlJob(
         "topic", "order-events",
         "startTimestamp", Instant.now().minusSeconds(3600).toEpochMilli(),
         "endTimestamp", Instant.now().toEpochMilli(),
-        "batchSize", 50000,
+        "streamBatchSize", 50000,
         "threads", 6
     )
 );
@@ -260,7 +260,7 @@ EtlJob job = new EtlJob(
         "topic", "events-topic",
         "startTimestamp", startTime.toEpochMilli(),
         "endTimestamp", endTime.toEpochMilli(),
-        "batchSize", 100000,
+        "streamBatchSize", 100000,
         "threads", 8
     )
 );
@@ -286,7 +286,7 @@ EtlJob job = new EtlJob(
         "topic", "events-topic",
         "startTimestamp", start.toEpochMilli(),
         "endTimestamp", end.toEpochMilli(),
-        "batchSize", 100000,
+        "streamBatchSize", 100000,
         "threads", 8
     )
 );
@@ -380,7 +380,7 @@ INFO: ✅ Fast bulk insert into 'target_table' completed in 12345 ms (1000000 ro
 ## Оптимизация производительности
 
 1. **Используйте FastSqlServerLoader** для больших объемов данных
-2. **Увеличьте batchSize** до 50000-100000 для массовой загрузки
+2. **Увеличьте streamBatchSize** до 50000-100000 для массовой загрузки
 3. **Используйте больше потоков** (8-16) для параллельной обработки
 4. **Отключите индексы и триггеры** на целевой таблице перед загрузкой (FastSqlServerLoader делает это автоматически)
 5. **Используйте временные окна** для инкрементальной загрузки
@@ -433,7 +433,7 @@ EtlJob job = new EtlJob(
         "topic", "events-topic",
         "startTimestamp", lastLoadTime.toEpochMilli(),
         "endTimestamp", currentTime.toEpochMilli(),
-        "batchSize", 100000,
+        "streamBatchSize", 100000,
         "threads", 8
     )
 );

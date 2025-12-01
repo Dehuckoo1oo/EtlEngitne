@@ -23,6 +23,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 @Component
 @RequiredArgsConstructor
@@ -36,7 +37,7 @@ public class JdbcExtractor implements Extractor {
     }
 
     @Override
-    public Collection<EtlRecord> extract(EtlJob job) {
+    public void extract(EtlJob job, Consumer<Collection<EtlRecord>> batchConsumer) {
         String query = job.getSourceQuery();
         if (query == null) {
             query = Objects.toString(job.getParam("query"), "");
@@ -45,7 +46,7 @@ public class JdbcExtractor implements Extractor {
             throw new ExtractionException("Source query is required for JdbcExtractor", job.getJobId());
         }
 
-        int batchSize = (int) job.getParamOrDefault("batchSize", 1000);
+        int streamBatchSize = (int) job.getParamOrDefault("streamBatchSize", 50000);
         int threadCount = (int) job.getParamOrDefault("threads", 4);
         int partitionCount = (int) job.getParamOrDefault("partitions", 1);
         String partitionColumn = Objects.toString(job.getParam("partitionColumn"), "");
@@ -57,7 +58,6 @@ public class JdbcExtractor implements Extractor {
             avroSchema = new Schema.Parser().parse(schemaStr);
         }
 
-        final List<EtlRecord> result = Collections.synchronizedList(new ArrayList<>());
         final Map<String, String> avroFieldLookup = buildAvroFieldLookup(avroSchema);
         final ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         final List<Future<?>> tasks = new ArrayList<>();
@@ -74,28 +74,29 @@ public class JdbcExtractor implements Extractor {
                             jdbcTemplate,
                             partQuery,
                             part,
+                            streamBatchSize,
                             avroSchema,
                             avroFieldLookup,
                             keyColumn,
-                            result
+                            batchConsumer
                     )));
                 }
             } else {
                 Integer totalRows = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM (" + query + ") t", Integer.class);
                 final int total = (totalRows == null) ? 0 : totalRows;
 
-                for (int offset = 0; offset < total; offset += batchSize) {
+                for (int offset = 0; offset < total; offset += streamBatchSize) {
                     final int off = offset;
 
                     tasks.add(executor.submit(new OffsetQueryTask(
                             jdbcTemplate,
                             query,
                             off,
-                            batchSize,
+                            streamBatchSize,
                             avroSchema,
                             avroFieldLookup,
                             keyColumn,
-                            result
+                            batchConsumer
                     )));
                 }
             }
@@ -105,7 +106,6 @@ public class JdbcExtractor implements Extractor {
             if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
                 throw new ExtractionException("JdbcExtractor did not finish within timeout", job.getJobId());
             }
-            return result;
         } catch (EtlException e) {
             throw e;
         } catch (InterruptedException e) {
@@ -126,35 +126,39 @@ public class JdbcExtractor implements Extractor {
         private final JdbcTemplate jdbcTemplate;
         private final String query;
         private final int part;
+        private final int streamBatchSize;
         private final Schema avroSchema;
         private final Map<String, String> avroFieldLookup;
         private final String keyColumn;
-        private final List<EtlRecord> result;
+        private final Consumer<Collection<EtlRecord>> batchConsumer;
 
         PartitionQueryTask(JdbcTemplate jdbcTemplate,
                            String query,
                            int part,
+                           int streamBatchSize,
                            Schema avroSchema,
                            Map<String, String> avroFieldLookup,
                            String keyColumn,
-                           List<EtlRecord> result) {
+                           Consumer<Collection<EtlRecord>> batchConsumer) {
             this.jdbcTemplate = jdbcTemplate;
             this.query = query;
             this.part = part;
+            this.streamBatchSize = streamBatchSize;
             this.avroSchema = avroSchema;
             this.avroFieldLookup = avroFieldLookup;
             this.keyColumn = keyColumn;
-            this.result = result;
+            this.batchConsumer = batchConsumer;
         }
 
         @Override
         public void run() {
-            ResultSetExtractor<Void> extractor = new PartitionResultSetExtractor(
-                    part,
+            ResultSetExtractor<Void> extractor = new StreamingResultSetExtractor(
+                    "sql-part-" + part,
+                    streamBatchSize,
                     avroSchema,
                     avroFieldLookup,
                     keyColumn,
-                    result
+                    batchConsumer
             );
             jdbcTemplate.query(query, extractor);
         }
@@ -168,77 +172,84 @@ public class JdbcExtractor implements Extractor {
         private final JdbcTemplate jdbcTemplate;
         private final String baseQuery;
         private final int offset;
-        private final int batchSize;
+        private final int streamBatchSize;
         private final Schema avroSchema;
         private final Map<String, String> avroFieldLookup;
         private final String keyColumn;
-        private final List<EtlRecord> result;
+        private final Consumer<Collection<EtlRecord>> batchConsumer;
 
         OffsetQueryTask(JdbcTemplate jdbcTemplate,
                         String baseQuery,
                         int offset,
-                        int batchSize,
+                        int streamBatchSize,
                         Schema avroSchema,
                         Map<String, String> avroFieldLookup,
                         String keyColumn,
-                        List<EtlRecord> result) {
+                        Consumer<Collection<EtlRecord>> batchConsumer) {
             this.jdbcTemplate = jdbcTemplate;
             this.baseQuery = baseQuery;
             this.offset = offset;
-            this.batchSize = batchSize;
+            this.streamBatchSize = streamBatchSize;
             this.avroSchema = avroSchema;
             this.avroFieldLookup = avroFieldLookup;
             this.keyColumn = keyColumn;
-            this.result = result;
+            this.batchConsumer = batchConsumer;
         }
 
         @Override
         public void run() {
             String pagedQuery = baseQuery +
-                    " OFFSET " + offset + " ROWS FETCH NEXT " + batchSize + " ROWS ONLY";
+                    " OFFSET " + offset + " ROWS FETCH NEXT " + streamBatchSize + " ROWS ONLY";
 
-            ResultSetExtractor<Void> extractor = new OffsetResultSetExtractor(
-                    offset,
+            ResultSetExtractor<Void> extractor = new StreamingResultSetExtractor(
+                    "sql",
+                    streamBatchSize,
                     avroSchema,
                     avroFieldLookup,
                     keyColumn,
-                    result
+                    batchConsumer
             );
             jdbcTemplate.query(pagedQuery, extractor);
         }
     }
 
     /**
-     * ResultSetExtractor для партиционированного запроса.
+     * Streaming ResultSetExtractor that processes records in batches.
+     * Instead of accumulating all records in memory, it invokes the consumer
+     * for each batch of records.
      */
-    private static class PartitionResultSetExtractor implements ResultSetExtractor<Void> {
+    private static class StreamingResultSetExtractor implements ResultSetExtractor<Void> {
 
-        private final int part;
+        private final String sourcePartition;
+        private final int batchSize;
         private final Schema avroSchema;
         private final Map<String, String> avroFieldLookup;
         private final String keyColumn;
-        private final List<EtlRecord> result;
+        private final Consumer<Collection<EtlRecord>> batchConsumer;
 
-        PartitionResultSetExtractor(int part,
+        StreamingResultSetExtractor(String sourcePartition,
+                                    int batchSize,
                                     Schema avroSchema,
                                     Map<String, String> avroFieldLookup,
                                     String keyColumn,
-                                    List<EtlRecord> result) {
-            this.part = part;
+                                    Consumer<Collection<EtlRecord>> batchConsumer) {
+            this.sourcePartition = sourcePartition;
+            this.batchSize = batchSize;
             this.avroSchema = avroSchema;
             this.avroFieldLookup = avroFieldLookup;
             this.keyColumn = keyColumn;
-            this.result = result;
+            this.batchConsumer = batchConsumer;
         }
 
         @Override
         public Void extractData(ResultSet rs) throws SQLException {
             ResultSetMetaData md = rs.getMetaData();
+            List<EtlRecord> currentBatch = new ArrayList<>(batchSize);
 
             while (rs.next()) {
                 GenericRecord avro = (avroSchema != null) ? new GenericData.Record(avroSchema) : null;
 
-                EtlRecord record = new EtlRecord(Instant.now(), "sql-part-" + part, rs.getRow());
+                EtlRecord record = new EtlRecord(Instant.now(), sourcePartition, rs.getRow());
                 for (int i = 1; i <= md.getColumnCount(); i++) {
                     String col = md.getColumnLabel(i);
                     Object val = rs.getObject(i);
@@ -255,61 +266,20 @@ public class JdbcExtractor implements Extractor {
                 if (avro != null) {
                     record.put("value", avro);
                 }
-                result.add(record);
+                currentBatch.add(record);
+
+                // When batch is full, send it for processing immediately
+                if (currentBatch.size() >= batchSize) {
+                    batchConsumer.accept(new ArrayList<>(currentBatch));
+                    currentBatch.clear();
+                }
             }
-            return null;
-        }
-    }
 
-    /**
-     * ResultSetExtractor для запросов с offset/batch.
-     */
-    private static class OffsetResultSetExtractor implements ResultSetExtractor<Void> {
-
-        private final int offset;
-        private final Schema avroSchema;
-        private final Map<String, String> avroFieldLookup;
-        private final String keyColumn;
-        private final List<EtlRecord> result;
-
-        OffsetResultSetExtractor(int offset,
-                                 Schema avroSchema,
-                                 Map<String, String> avroFieldLookup,
-                                 String keyColumn,
-                                 List<EtlRecord> result) {
-            this.offset = offset;
-            this.avroSchema = avroSchema;
-            this.avroFieldLookup = avroFieldLookup;
-            this.keyColumn = keyColumn;
-            this.result = result;
-        }
-
-        @Override
-        public Void extractData(ResultSet rs) throws SQLException {
-            ResultSetMetaData md = rs.getMetaData();
-
-            while (rs.next()) {
-                GenericRecord avro = (avroSchema != null) ? new GenericData.Record(avroSchema) : null;
-
-                EtlRecord record = new EtlRecord(Instant.now(), "sql", offset + rs.getRow());
-                for (int i = 1; i <= md.getColumnCount(); i++) {
-                    String col = md.getColumnLabel(i);
-                    Object val = rs.getObject(i);
-                    String avroFieldName = resolveFieldName(avroFieldLookup, col);
-                    if (avro != null && avroFieldName != null) {
-                        avro.put(avroFieldName, val);
-                    } else {
-                        record.put(col, val);
-                    }
-                }
-                if (!keyColumn.isEmpty()) {
-                    record.put("key", rs.getObject(keyColumn));
-                }
-                if (avro != null) {
-                    record.put("value", avro);
-                }
-                result.add(record);
+            // Send remaining records
+            if (!currentBatch.isEmpty()) {
+                batchConsumer.accept(currentBatch);
             }
+
             return null;
         }
     }

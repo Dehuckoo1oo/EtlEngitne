@@ -61,7 +61,7 @@ EtlJob job = new EtlJob(
         "topic", "my-topic",          // Имя топика
         
         // Параметры производительности
-        "batchSize", 10000,           // Размер батча
+        "streamBatchSize", 10000,           // Размер батча
         "threads", 4                  // Количество потоков
     )
 );
@@ -157,7 +157,7 @@ EtlJob job = new EtlJob(
         "topic", "my-topic",
         "avroSchema", schema,                  // Передаем схему
         "keyColumn", "id",                     // Используем id как ключ Kafka
-        "batchSize", 10000,
+        "streamBatchSize", 10000,
         "threads", 4
     )
 );
@@ -212,7 +212,7 @@ EtlJob job = new EtlJob(
         "keyColumn", "id",
         "partitionColumn", "bucket",          // Колонка для партиционирования
         "partitions", 10,                     // Количество партиций
-        "batchSize", 100000,
+        "streamBatchSize", 100000,
         "threads", 8
     )
 );
@@ -227,7 +227,7 @@ EtlJob job = new EtlJob(
 | `extractorType` | String | Тип извлекателя: `"sql"` | Обязательно |
 | `transformerType` | String | Тип трансформера: `"noop"`, `"record-to-avro"` | Обязательно |
 | `loaderType` | String | Тип загрузчика: `"kafka"` | Обязательно |
-| `batchSize` | Integer | Размер батча для обработки | 1000 |
+| `streamBatchSize` | Integer | Размер батча для обработки | 1000 |
 | `threads` | Integer | Количество потоков | 4 |
 
 ### Параметры для SQL Extractor
@@ -301,7 +301,7 @@ EtlJob job = new EtlJob(
         "topic", "orders-avro",
         "avroSchema", schema.toString(),
         "keyColumn", "order_id",
-        "batchSize", 100000,
+        "streamBatchSize", 100000,
         "threads", 8
     )
 );
@@ -338,7 +338,7 @@ logging:
 
 ## Оптимизация производительности
 
-1. **Увеличьте batchSize** для больших объемов данных (10000-100000)
+1. **Увеличьте streamBatchSize** для больших объемов данных (10000-100000)
 2. **Используйте больше потоков** (`threads: 8-16`) для параллельной обработки
 3. **Применяйте партиционирование** для очень больших таблиц
 4. **Используйте индексы** в SQL запросах для быстрой выборки

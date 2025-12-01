@@ -42,13 +42,19 @@ public class KafkaToSqlIntegrationTest {
 
     /**
      * Оптимизированная версия теста sqlTableToKafka_shouldTransferMillionRows.
-     * Использует следующий подход для ускорения загрузки данных:
+     * 
+     * Подготовка данных:
      * 1. Создает временную таблицу БЕЗ партиционирования (быстрее заполняется)
      * 2. Генерирует данные в памяти как EtlRecord
      * 3. Загружает данные во временную таблицу через SQL Server Bulk Copy API (намного быстрее чем batch INSERT)
      * 4. Копирует данные из временной таблицы в целевую партиционированную таблицу через INSERT ... SELECT
      * 
-     * Этот подход позволяет загрузить 1 000 000 строк за несколько секунд вместо 20+ минут.
+     * Streaming ETL обработка (новая архитектура):
+     * 5. Использует батчевую обработку (streamBatchSize) для экономии памяти
+     * 6. Данные обрабатываются порциями: extract batch → transform → load → next batch
+     * 7. Вместо 2M записей в памяти одновременно - только текущий батч от каждого потока
+     * 
+     * Этот подход позволяет загрузить 2 000 000 строк за несколько секунд с минимальным потреблением памяти.
      */
     @Test
     @SneakyThrows
@@ -175,9 +181,9 @@ public class KafkaToSqlIntegrationTest {
 
         // Генерируем данные в памяти и загружаем через Bulk Copy
         System.out.println("Генерация данных в памяти...");
-        List<ru.pospelov.etl.engine.model.EtlRecord> records = new ArrayList<>(500_000);
+        List<ru.pospelov.etl.engine.model.EtlRecord> records = new ArrayList<>(2_000_000);
         Instant now = Instant.now();
-        for (int i = 1; i <= 500_000; i++) {
+        for (int i = 1; i <= 2_000_000; i++) {
             ru.pospelov.etl.engine.model.EtlRecord record = new ru.pospelov.etl.engine.model.EtlRecord(
                     now, "test", i
             );
@@ -277,7 +283,7 @@ public class KafkaToSqlIntegrationTest {
 
         // Проверяем количество записей
         Integer count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM SUPPORT.dbo.order_src", Integer.class);
-        assertThat(count).isEqualTo(500_000);
+        assertThat(count).isEqualTo(2_000_000);
         System.out.println("✅ Проверка: загружено " + count + " записей");
 
         // Продолжаем с тестом передачи в Kafka
@@ -299,9 +305,12 @@ public class KafkaToSqlIntegrationTest {
                         Map.entry("topic", "order-events-value"),
                         Map.entry("format", "avro"),
                         Map.entry("threads", 8),
-                        Map.entry("batchSize", 100_000),
+                        // Streaming batch size - размер батча для потоковой обработки
+                        // Вместо загрузки всех 2M записей в память, обрабатываются батчами по 100K
+                        Map.entry("streamBatchSize", 100_000),
                         Map.entry("avroSchema", schema.toString()),
                         Map.entry("keyColumn", "order_id"),
+                        // Партиционирование SQL: каждый поток обрабатывает свои партиции
                         Map.entry("partitionColumn", "bucket"),
                         Map.entry("partitions", 72)
                 )
@@ -332,7 +341,8 @@ public class KafkaToSqlIntegrationTest {
                         "topic", "order-events-value",
                         "startTimestamp", kafkaStart.minusSeconds(60).toEpochMilli(), // Начинаем немного раньше для надежности
                         "endTimestamp", kafkaEnd.plusSeconds(60).toEpochMilli(),     // Заканчиваем немного позже для надежности
-                        "batchSize", 100_000,
+                        // Streaming batch size - единый размер батча для всей обработки
+                        "streamBatchSize", 100_000,
                         "threads", 8
                 )
         );

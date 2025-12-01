@@ -7,7 +7,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
-import ru.pospelov.etl.engine.exception.EtlException;
 import ru.pospelov.etl.engine.exception.LoadingException;
 import ru.pospelov.etl.engine.model.EtlBulkRecord;
 import ru.pospelov.etl.engine.model.EtlJob;
@@ -21,11 +20,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Component
@@ -44,84 +38,64 @@ public class FastSqlServerLoader implements Loader {
         if (records.isEmpty()) return;
 
         String targetTable = job.getTargetTable();
-        int batchSize = (int) job.getParamOrDefault("batchSize", 1000);
-        int threadCount = (int) job.getParamOrDefault("threads", 4);
+        int batchSize = (int) job.getParamOrDefault("streamBatchSize", 50000);
 
         List<EtlRecord> allRecords = new ArrayList<>(records);
-        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
-        List<Future<?>> futures = new ArrayList<>();
         Instant start = Instant.now();
 
-        for (int from = 0; from < allRecords.size(); from += batchSize) {
-            int to = Math.min(from + batchSize, allRecords.size());
-            List<EtlRecord> batch = new ArrayList<>(allRecords.subList(from, to));
-
-            futures.add(executor.submit(() -> {
-                try (Connection connection = dataSource.getConnection()) {
-                    SQLServerConnection sqlConn = connection.unwrap(SQLServerConnection.class);
-                    try (SQLServerBulkCopy bulkCopy = new SQLServerBulkCopy(sqlConn)) {
-                        bulkCopy.setDestinationTableName(targetTable);
-
-                        SQLServerBulkCopyOptions options = new SQLServerBulkCopyOptions();
-                        options.setTableLock(true);
-                        options.setCheckConstraints(false);
-                        options.setFireTriggers(false);
-                        options.setKeepNulls(true);
-                        bulkCopy.setBulkCopyOptions(options);
-
-                        for (String column : batch.get(0).getAll().keySet()) {
-                            bulkCopy.addColumnMapping(column, column);
-                        }
-
-                        bulkCopy.writeToServer(new EtlBulkRecord(batch));
-                        log.info("Thread {} inserted {} rows", Thread.currentThread().getName(), batch.size());
-                    }
-                } catch (SQLException e) {
-                    throw new LoadingException(
-                            "Bulk insert failed",
-                            job.getJobId(),
-                            batch.isEmpty() ? null : batch.get(0),
-                            EtlErrorSeverity.CRITICAL,
-                            e
-                    );
-                }
-            }));
-        }
-
         try {
-            for (Future<?> future : futures) {
-                try {
-                    future.get();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new LoadingException("Fast SQL loader interrupted", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
-                } catch (ExecutionException e) {
-                    Throwable cause = e.getCause();
-                    if (cause instanceof EtlException etlException) {
-                        throw etlException;
-                    }
-                    throw new LoadingException("Fast SQL loader failed", job.getJobId(), null, EtlErrorSeverity.CRITICAL, cause);
-                }
-            }
+            // Process in batches for very large collections
+            for (int from = 0; from < allRecords.size(); from += batchSize) {
+                int to = Math.min(from + batchSize, allRecords.size());
+                List<EtlRecord> batch = allRecords.subList(from, to);
 
-            executor.shutdown();
-            if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
-                throw new LoadingException("Fast SQL loader did not finish in time", job.getJobId(), null);
+                bulkInsertBatch(targetTable, batch, job.getJobId());
+                log.debug("Inserted {} rows (batch {}/{})", batch.size(), to, allRecords.size());
             }
-        } catch (EtlException e) {
-            throw e;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new LoadingException("FastSqlServerLoader interrupted", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
-        } finally {
-            executor.shutdownNow();
+        } catch (Exception e) {
+            throw new LoadingException(
+                    "Bulk insert failed",
+                    job.getJobId(),
+                    allRecords.isEmpty() ? null : allRecords.get(0),
+                    EtlErrorSeverity.CRITICAL,
+                    e
+            );
         }
 
         Instant end = Instant.now();
-        log.info("✅ Fast bulk insert into '{}' completed in {} ms ({} rows, {} threads)",
+        log.info("✅ Fast bulk insert into '{}' completed in {} ms ({} rows)",
                 targetTable,
                 Duration.between(start, end).toMillis(),
-                allRecords.size(),
-                threadCount);
+                allRecords.size());
+    }
+
+    private void bulkInsertBatch(String targetTable, List<EtlRecord> batch, String jobId) {
+        try (Connection connection = dataSource.getConnection()) {
+            SQLServerConnection sqlConn = connection.unwrap(SQLServerConnection.class);
+            try (SQLServerBulkCopy bulkCopy = new SQLServerBulkCopy(sqlConn)) {
+                bulkCopy.setDestinationTableName(targetTable);
+
+                SQLServerBulkCopyOptions options = new SQLServerBulkCopyOptions();
+                options.setTableLock(true);
+                options.setCheckConstraints(false);
+                options.setFireTriggers(false);
+                options.setKeepNulls(true);
+                bulkCopy.setBulkCopyOptions(options);
+
+                for (String column : batch.get(0).getAll().keySet()) {
+                    bulkCopy.addColumnMapping(column, column);
+                }
+
+                bulkCopy.writeToServer(new EtlBulkRecord(batch));
+            }
+        } catch (SQLException e) {
+            throw new LoadingException(
+                    "Bulk insert failed",
+                    jobId,
+                    batch.isEmpty() ? null : batch.get(0),
+                    EtlErrorSeverity.CRITICAL,
+                    e
+            );
+        }
     }
 }

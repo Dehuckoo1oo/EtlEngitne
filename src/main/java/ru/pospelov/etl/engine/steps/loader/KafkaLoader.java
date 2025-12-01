@@ -33,12 +33,14 @@ public class KafkaLoader implements Loader {
     @Override
     public void load(Collection<EtlRecord> records, EtlJob job) {
         if (records.isEmpty()) return;
+        
         String topic = job.getParam("topic").toString();
         String format = String.valueOf(job.getParamOrDefault("format", "string"));
         boolean isAvro = format.equalsIgnoreCase("avro");
 
         try (Producer<String, Object> producer = clientFactory.createProducer(isAvro)) {
             List<PendingSend> pendingSends = new ArrayList<>(records.size());
+            
             for (EtlRecord record : records) {
                 try {
                     ProducerRecord<String, Object> kafkaRecord = new ProducerRecord<>(
@@ -52,6 +54,7 @@ public class KafkaLoader implements Loader {
                     throw new LoadingException("Kafka loading failed", job.getJobId(), record, EtlErrorSeverity.CRITICAL, e);
                 }
             }
+            
             producer.flush();
             waitForSends(job, pendingSends);
         } catch (LoadingException e) {

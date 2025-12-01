@@ -98,20 +98,34 @@
 
 ## Важные задачи (средний приоритет)
 
-### 5. Потоковая обработка (Streaming)
+### 5. Потоковая обработка (Streaming) ✅
 
-**Проблема:** Все данные загружаются в память (`Collection<EtlRecord>`).
+**Проблема:** Все данные загружались в память (`Collection<EtlRecord>`), что при больших объемах данных (> 1M записей) приводило к чрезмерному потреблению памяти.
 
-**Требуется:**
-- Изменить интерфейсы на `Stream<EtlRecord>` вместо `Collection<EtlRecord>`
-- Потоковая обработка для больших объемов данных
-- Возможность обрабатывать данные батчами без полной загрузки в память
-- Lazy evaluation для оптимизации памяти
+**Реализовано:**
+- ✅ Изменен интерфейс `Extractor` на callback-based подход с `Consumer<Collection<EtlRecord>>`
+- ✅ Батчевая обработка данных - данные обрабатываются порциями (по умолчанию 50,000 записей)
+- ✅ Streaming pipeline в `EtlPipelineFactory` - каждый батч проходит через extract → transform → load
+- ✅ Параметр `streamBatchSize` для настройки размера батча
+- ✅ Значительное снижение потребления памяти (вместо всех данных в памяти - только текущий батч от каждого потока)
+- ✅ Сохранена многопоточность и производительность
+- ✅ `FastSqlServerLoader` продолжает использовать bulk insert
+- ✅ Все существующие тесты проходят успешно
 
-**Файлы для изменения:**
-- Модифицировать интерфейсы `Extractor`, `Transformer`, `Loader`
-- Обновить все реализации компонентов
-- Возможно, создать отдельные интерфейсы для потоковой обработки
+**Преимущества:**
+- Память: вместо 1M записей в памяти одновременно - только `threads * streamBatchSize` (например, 4 * 50K = 200K)
+- Скорость: параллельная обработка сохранена, загрузка начинается сразу при извлечении первого батча
+- Гибкость: размер батча настраивается через параметры задачи
+
+**Файлы:**
+- `src/main/java/ru/pospelov/etl/engine/steps/extractor/Extractor.java`
+- `src/main/java/ru/pospelov/etl/engine/steps/extractor/JdbcExtractor.java`
+- `src/main/java/ru/pospelov/etl/engine/steps/extractor/KafkaExtractor.java`
+- `src/main/java/ru/pospelov/etl/engine/steps/loader/JdbcLoader.java`
+- `src/main/java/ru/pospelov/etl/engine/steps/loader/KafkaLoader.java`
+- `src/main/java/ru/pospelov/etl/engine/steps/loader/FastSqlServerLoader.java`
+- `src/main/java/ru/pospelov/etl/engine/engine/EtlPipelineFactory.java`
+- `src/main/java/ru/pospelov/etl/engine/validation/ExtractorValidator.java`
 
 ### 6. Контекст выполнения
 

@@ -64,7 +64,7 @@ ETL Engine — это Spring Boot приложение для организац
 
 **Параметры:**
 - `sourceQuery` или `query` - SQL запрос для выборки данных
-- `batchSize` - размер батча для обработки (по умолчанию: 1000)
+- `streamBatchSize` - размер батча для потоковой обработки (по умолчанию: 50000)
 - `threads` - количество потоков для параллельной обработки (по умолчанию: 4)
 - `partitions` - количество партиций для партиционированного режима
 - `partitionColumn` - колонка для партиционирования
@@ -188,7 +188,7 @@ EtlJob job = new EtlJob(
         "loaderType", "kafka",
         "topic", "my-topic",
         "format", "avro",
-        "batchSize", 10000,
+        "streamBatchSize", 50000,
         "threads", 8
     )
 );

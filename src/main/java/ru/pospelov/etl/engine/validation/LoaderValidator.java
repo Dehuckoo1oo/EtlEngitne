@@ -30,7 +30,7 @@ public class LoaderValidator implements ComponentValidator {
         }
         
         // Validate optional parameters
-        validateIntParam(job, "batchSize", result, 1, Integer.MAX_VALUE);
+        validateIntParam(job, "streamBatchSize", result, 1, Integer.MAX_VALUE);
         validateIntParam(job, "threads", result, 1, Integer.MAX_VALUE);
     }
     

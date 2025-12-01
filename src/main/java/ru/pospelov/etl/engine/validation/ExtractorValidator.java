@@ -32,7 +32,7 @@ public class ExtractorValidator implements ComponentValidator {
         }
         
         // Validate optional parameters with type checking
-        validateIntParam(job, "batchSize", result, 1, Integer.MAX_VALUE);
+        validateIntParam(job, "streamBatchSize", result, 1, Integer.MAX_VALUE);
         validateIntParam(job, "threads", result, 1, Integer.MAX_VALUE);
         validateIntParam(job, "partitions", result, 1, Integer.MAX_VALUE);
         
@@ -101,6 +101,7 @@ public class ExtractorValidator implements ComponentValidator {
         }
         
         // Validate optional parameters
+        validateIntParam(job, "streamBatchSize", result, 1, Integer.MAX_VALUE);
         validateIntParam(job, "threads", result, 1, Integer.MAX_VALUE);
         
         String format = Objects.toString(job.getParamOrDefault("format", "string"), "string");
