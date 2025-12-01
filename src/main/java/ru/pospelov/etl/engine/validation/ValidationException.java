@@ -16,7 +16,7 @@ public class ValidationException extends RuntimeException {
     }
     
     public ValidationException(String message, String jobId, ValidationResult validationResult) {
-        super(message);
+        super(buildDetailedMessage(message, validationResult));
         this.jobId = jobId;
         this.validationResult = validationResult;
     }
@@ -25,6 +25,13 @@ public class ValidationException extends RuntimeException {
         super(message, cause);
         this.jobId = jobId;
         this.validationResult = null;
+    }
+    
+    private static String buildDetailedMessage(String baseMessage, ValidationResult validationResult) {
+        if (validationResult != null && validationResult.hasErrors()) {
+            return baseMessage + "\n" + validationResult.getErrorMessage();
+        }
+        return baseMessage;
     }
     
     public String getJobId() {

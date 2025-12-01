@@ -15,9 +15,10 @@ public class LoaderValidator implements ComponentValidator {
     public void validate(EtlJob job, String componentType, ValidationResult result) {
         switch (componentType) {
             case "sql" -> validateSqlLoader(job, result);
+            case "fast-sql" -> validateSqlLoader(job, result); // Uses same validation as sql
             case "kafka" -> validateKafkaLoader(job, result);
             default -> result.addError("loaderType", 
-                "Unknown loader type: " + componentType + ". Available types: sql, kafka");
+                "Unknown loader type: " + componentType + ". Available types: sql, fast-sql, kafka");
         }
     }
     

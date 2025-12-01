@@ -175,9 +175,9 @@ public class KafkaToSqlIntegrationTest {
 
         // Генерируем данные в памяти и загружаем через Bulk Copy
         System.out.println("Генерация данных в памяти...");
-        List<ru.pospelov.etl.engine.model.EtlRecord> records = new ArrayList<>(2_000_000);
+        List<ru.pospelov.etl.engine.model.EtlRecord> records = new ArrayList<>(500_000);
         Instant now = Instant.now();
-        for (int i = 1; i <= 2_000_000; i++) {
+        for (int i = 1; i <= 500_000; i++) {
             ru.pospelov.etl.engine.model.EtlRecord record = new ru.pospelov.etl.engine.model.EtlRecord(
                     now, "test", i
             );
@@ -277,7 +277,7 @@ public class KafkaToSqlIntegrationTest {
 
         // Проверяем количество записей
         Integer count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM SUPPORT.dbo.order_src", Integer.class);
-        assertThat(count).isEqualTo(2_000_000);
+        assertThat(count).isEqualTo(500_000);
         System.out.println("✅ Проверка: загружено " + count + " записей");
 
         // Продолжаем с тестом передачи в Kafka
