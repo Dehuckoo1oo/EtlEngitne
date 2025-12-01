@@ -93,6 +93,7 @@ public class EtlPipelineFactory {
         private final Loader loader;
         private final DeadLetterQueue deadLetterQueue;
         private final EtlMetrics metrics;
+        private final CancellationToken cancellationToken = new CancellationToken();
 
         private StructuredEtlPipeline(
                 Extractor extractor,
@@ -109,34 +110,67 @@ public class EtlPipelineFactory {
         }
 
         @Override
+        public void cancel() {
+            cancellationToken.cancel();
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return cancellationToken.isCancelled();
+        }
+
+        @Override
         public void run(EtlJob job) {
             Objects.requireNonNull(job, "job");
+            cancellationToken.reset(); // Reset cancellation state for new execution
             metrics.onJobStatusChanged(job, EtlJobStatus.RUNNING);
             try {
+                cancellationToken.checkCancellation();
                 Collection<EtlRecord> extracted = extract(job);
+                cancellationToken.checkCancellation();
                 Collection<EtlRecord> transformed = transform(job, extracted);
+                cancellationToken.checkCancellation();
                 load(job, transformed);
+                cancellationToken.checkCancellation();
                 metrics.onJobStatusChanged(job, EtlJobStatus.COMPLETED);
+            } catch (CancellationException e) {
+                metrics.onJobStatusChanged(job, EtlJobStatus.CANCELLED);
+                pipelineLog.info("Job '{}' execution was cancelled", job.getJobId());
+                throw e;
             } catch (RuntimeException e) {
+                if (cancellationToken.isCancelled()) {
+                    metrics.onJobStatusChanged(job, EtlJobStatus.CANCELLED);
+                    throw new CancellationException("Execution was cancelled", e);
+                }
                 metrics.onJobStatusChanged(job, EtlJobStatus.FAILED);
                 throw e;
             }
         }
 
         private Collection<EtlRecord> extract(EtlJob job) {
+            cancellationToken.checkCancellation();
             metrics.onJobStatusChanged(job, EtlJobStatus.EXTRACTING);
             metrics.onExtractStart(job);
             long startedAtNanos = System.nanoTime();
             try {
                 Collection<EtlRecord> records = extractor.extract(job);
+                cancellationToken.checkCancellation();
                 Collection<EtlRecord> safeRecords = records == null ? List.of() : records;
                 metrics.onExtractComplete(job, safeRecords.size(), elapsedMillis(startedAtNanos));
                 return safeRecords;
+            } catch (CancellationException e) {
+                throw e;
             } catch (EtlException e) {
+                if (cancellationToken.isCancelled()) {
+                    throw new CancellationException("Execution was cancelled during extraction", e);
+                }
                 metrics.onError(job, e);
                 deadLetterQueue.publish(e);
                 throw e;
             } catch (Exception e) {
+                if (cancellationToken.isCancelled()) {
+                    throw new CancellationException("Execution was cancelled during extraction", e);
+                }
                 ExtractionException wrapped = new ExtractionException(
                         "Failed to extract records",
                         job.getJobId(),
@@ -151,6 +185,7 @@ public class EtlPipelineFactory {
         }
 
         private Collection<EtlRecord> transform(EtlJob job, Collection<EtlRecord> records) {
+            cancellationToken.checkCancellation();
             Collection<EtlRecord> safeRecords = records == null ? List.of() : records;
             metrics.onJobStatusChanged(job, EtlJobStatus.TRANSFORMING);
             metrics.onTransformStart(job, safeRecords.size());
@@ -162,15 +197,24 @@ public class EtlPipelineFactory {
 
             List<EtlRecord> transformed = new ArrayList<>();
             for (EtlRecord record : safeRecords) {
+                cancellationToken.checkCancellation(); // Check before processing each record
                 try {
                     Collection<EtlRecord> result = transformer.transform(List.of(record), job);
                     if (result != null && !result.isEmpty()) {
                         transformed.addAll(result);
                         result.forEach(created -> metrics.onRecordProcessed(job, created));
                     }
+                } catch (CancellationException e) {
+                    throw e;
                 } catch (EtlException e) {
+                    if (cancellationToken.isCancelled()) {
+                        throw new CancellationException("Execution was cancelled during transformation", e);
+                    }
                     handleStageException(job, e);
                 } catch (Exception e) {
+                    if (cancellationToken.isCancelled()) {
+                        throw new CancellationException("Execution was cancelled during transformation", e);
+                    }
                     TransformationException wrapped = new TransformationException(
                             "Failed to transform record with offset %s".formatted(record.getOffset()),
                             job.getJobId(),
@@ -182,11 +226,13 @@ public class EtlPipelineFactory {
                 }
             }
 
+            cancellationToken.checkCancellation();
             metrics.onTransformComplete(job, transformed.size(), elapsedMillis(startedAtNanos));
             return transformed;
         }
 
         private void load(EtlJob job, Collection<EtlRecord> records) {
+            cancellationToken.checkCancellation();
             Collection<EtlRecord> safeRecords = records == null ? List.of() : records;
             metrics.onJobStatusChanged(job, EtlJobStatus.LOADING);
             metrics.onLoadStart(job, safeRecords.size());
@@ -197,13 +243,23 @@ public class EtlPipelineFactory {
             }
 
             try {
+                cancellationToken.checkCancellation();
                 loader.load(safeRecords, job);
+                cancellationToken.checkCancellation();
                 metrics.onLoadComplete(job, safeRecords.size(), elapsedMillis(startedAtNanos));
+            } catch (CancellationException e) {
+                throw e;
             } catch (EtlException e) {
+                if (cancellationToken.isCancelled()) {
+                    throw new CancellationException("Execution was cancelled during loading", e);
+                }
                 metrics.onError(job, e);
                 deadLetterQueue.publish(e);
                 throw e;
             } catch (Exception e) {
+                if (cancellationToken.isCancelled()) {
+                    throw new CancellationException("Execution was cancelled during loading", e);
+                }
                 LoadingException wrapped = new LoadingException(
                         "Failed to load records",
                         job.getJobId(),

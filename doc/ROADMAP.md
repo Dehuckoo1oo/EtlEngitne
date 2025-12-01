@@ -51,22 +51,33 @@
 - Создать `ru.pospelov.etl.engine.metrics.EtlMetricsCollector`
 - Модифицировать `EtlPipeline` для поддержки метрик
 
-### 3. Отмена выполнения (Cancellation)
+### 3. Отмена выполнения (Cancellation) ✅
 
 **Проблема:** Нет способа остановить выполняющуюся задачу.
 
 **Требуется:**
-- Добавить `CancellationToken` или `AtomicBoolean` для проверки отмены
-- Передавать токен отмены через все этапы
-- Добавить проверку отмены в циклах обработки данных
-- Обеспечить корректное завершение потоков при отмене
-- Очистка ресурсов при прерывании выполнения
-- Метод `cancel()` в `EtlPipeline`
+- ✅ Добавить `CancellationToken` или `AtomicBoolean` для проверки отмены
+- ✅ Передавать токен отмены через все этапы
+- ✅ Добавить проверку отмены в циклах обработки данных
+- ✅ Обеспечить корректное завершение потоков при отмене
+- ✅ Очистка ресурсов при прерывании выполнения
+- ✅ Метод `cancel()` в `EtlPipeline`
 
-**Файлы для изменения:**
-- Создать `ru.pospelov.etl.engine.engine.CancellationToken`
-- Модифицировать `EtlPipeline` для поддержки отмены
-- Добавить проверки отмены во все компоненты
+**Реализовано:**
+- Создан `ru.pospelov.etl.engine.engine.CancellationToken` - thread-safe токен для отмены
+- Создан `ru.pospelov.etl.engine.engine.CancellationException` - исключение при отмене
+- Модифицирован `EtlPipeline` - добавлены методы `cancel()` и `isCancelled()`
+- Обновлен `StructuredEtlPipeline` - добавлены проверки отмены на всех этапах
+- Добавлены проверки отмены в циклах transform и load
+- Статус `CANCELLED` отражается в метриках
+- Токен отмены автоматически сбрасывается при новом запуске `run()`
+
+**Файлы:**
+- `src/main/java/ru/pospelov/etl/engine/engine/CancellationToken.java`
+- `src/main/java/ru/pospelov/etl/engine/engine/CancellationException.java`
+- `src/main/java/ru/pospelov/etl/engine/engine/EtlPipeline.java`
+- `src/main/java/ru/pospelov/etl/engine/engine/EtlPipelineFactory.java`
+- `src/test/java/ru/pospelov/etl/engine/EtlPipelineCancellationTest.java`
 
 ### 4. Валидация параметров задачи
 
