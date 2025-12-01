@@ -16,6 +16,7 @@ import ru.pospelov.etl.engine.model.EtlRecord;
 import ru.pospelov.etl.engine.steps.extractor.Extractor;
 import ru.pospelov.etl.engine.steps.loader.Loader;
 import ru.pospelov.etl.engine.steps.transformer.Transformer;
+import ru.pospelov.etl.engine.validation.JobValidator;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -29,18 +30,24 @@ public class EtlPipelineFactory {
     private final EtlComponentRegistry registry;
     private final DeadLetterQueue deadLetterQueue;
     private final EtlMetricsCollector metricsCollector;
+    private final JobValidator jobValidator;
 
     public EtlPipelineFactory(
             EtlComponentRegistry registry,
             DeadLetterQueue deadLetterQueue,
-            EtlMetricsCollector metricsCollector
+            EtlMetricsCollector metricsCollector,
+            JobValidator jobValidator
     ) {
         this.registry = registry;
         this.deadLetterQueue = deadLetterQueue;
         this.metricsCollector = metricsCollector;
+        this.jobValidator = jobValidator;
     }
 
     public EtlPipeline create(EtlJob job) {
+        // Validate job parameters before creating pipeline
+        jobValidator.validateOrThrow(job);
+        
         String extractorType = requireType(job, "extractorType");
         String transformerType = requireType(job, "transformerType");
         String loaderType = requireType(job, "loaderType");

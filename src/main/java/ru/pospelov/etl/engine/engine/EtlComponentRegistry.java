@@ -38,5 +38,17 @@ public class EtlComponentRegistry {
     public Loader getLoader(String type) {
         return loaderMap.get(type);
     }
+    
+    public Map<String, Extractor> getExtractorMap() {
+        return extractorMap;
+    }
+    
+    public Map<String, Transformer> getTransformerMap() {
+        return transformerMap;
+    }
+    
+    public Map<String, Loader> getLoaderMap() {
+        return loaderMap;
+    }
 }
 

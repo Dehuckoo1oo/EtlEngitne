@@ -6,6 +6,10 @@ import ru.pospelov.etl.engine.engine.EtlComponentRegistry;
 import ru.pospelov.etl.engine.engine.EtlPipeline;
 import ru.pospelov.etl.engine.engine.EtlPipelineFactory;
 import ru.pospelov.etl.engine.engine.InMemoryDeadLetterQueue;
+import ru.pospelov.etl.engine.validation.DefaultJobValidator;
+import ru.pospelov.etl.engine.validation.ExtractorValidator;
+import ru.pospelov.etl.engine.validation.LoaderValidator;
+import ru.pospelov.etl.engine.validation.TransformerValidator;
 import ru.pospelov.etl.engine.exception.EtlException;
 import ru.pospelov.etl.engine.exception.ExtractionException;
 import ru.pospelov.etl.engine.metrics.EtlJobMetricsSnapshot;
@@ -113,7 +117,13 @@ class EtlPipelineMetricsTest {
                 List.of(transformer),
                 List.of(loader)
         );
-        EtlPipelineFactory factory = new EtlPipelineFactory(registry, deadLetterQueue, collector);
+        DefaultJobValidator jobValidator = new DefaultJobValidator(
+                registry,
+                new ExtractorValidator(),
+                new TransformerValidator(),
+                new LoaderValidator()
+        );
+        EtlPipelineFactory factory = new EtlPipelineFactory(registry, deadLetterQueue, collector, jobValidator);
         EtlJob templateJob = createJob("template", extractor.getType(), transformer.getType(), loader.getType());
         return factory.create(templateJob);
     }
