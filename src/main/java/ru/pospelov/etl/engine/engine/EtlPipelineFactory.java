@@ -1,33 +1,239 @@
 package ru.pospelov.etl.engine.engine;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
+import ru.pospelov.etl.engine.exception.EtlException;
+import ru.pospelov.etl.engine.exception.ExtractionException;
+import ru.pospelov.etl.engine.exception.LoadingException;
+import ru.pospelov.etl.engine.exception.TransformationException;
+import ru.pospelov.etl.engine.metrics.EtlJobStatus;
+import ru.pospelov.etl.engine.metrics.EtlMetrics;
+import ru.pospelov.etl.engine.metrics.EtlMetricsCollector;
 import ru.pospelov.etl.engine.model.EtlJob;
+import ru.pospelov.etl.engine.model.EtlRecord;
 import ru.pospelov.etl.engine.steps.extractor.Extractor;
 import ru.pospelov.etl.engine.steps.loader.Loader;
 import ru.pospelov.etl.engine.steps.transformer.Transformer;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class EtlPipelineFactory {
 
     private final EtlComponentRegistry registry;
+    private final DeadLetterQueue deadLetterQueue;
+    private final EtlMetricsCollector metricsCollector;
 
-    public EtlPipelineFactory(EtlComponentRegistry registry) {
+    public EtlPipelineFactory(
+            EtlComponentRegistry registry,
+            DeadLetterQueue deadLetterQueue,
+            EtlMetricsCollector metricsCollector
+    ) {
         this.registry = registry;
+        this.deadLetterQueue = deadLetterQueue;
+        this.metricsCollector = metricsCollector;
     }
 
     public EtlPipeline create(EtlJob job) {
-        String extractorType = job.getParam("extractorType").toString();
-        String transformerType = job.getParam("transformerType").toString();
-        String loaderType = job.getParam("loaderType").toString();
+        String extractorType = requireType(job, "extractorType");
+        String transformerType = requireType(job, "transformerType");
+        String loaderType = requireType(job, "loaderType");
 
-        Extractor extractor = registry.getExtractor(extractorType);
-        Transformer transformer = registry.getTransformer(transformerType);
-        Loader loader = registry.getLoader(loaderType);
+        Extractor extractor = requireExtractor(job, extractorType);
+        Transformer transformer = requireTransformer(job, transformerType);
+        Loader loader = requireLoader(job, loaderType);
 
-        return j -> {
-            var records = extractor.extract(j);
-            var transformed = transformer.transform(records, j);
-            loader.load(transformed, j);
-        };
+        return new StructuredEtlPipeline(extractor, transformer, loader, deadLetterQueue, metricsCollector);
+    }
+
+    private static String requireType(EtlJob job, String key) {
+        Object value = job.getParam(key);
+        if (value == null) {
+            throw new IllegalArgumentException("Job '%s' is missing required parameter '%s'".formatted(job.getJobId(), key));
+        }
+        return value.toString();
+    }
+
+    private Extractor requireExtractor(EtlJob job, String type) {
+        Extractor extractor = registry.getExtractor(type);
+        if (extractor == null) {
+            throw new ExtractionException("Extractor '%s' is not registered".formatted(type), job.getJobId());
+        }
+        return extractor;
+    }
+
+    private Transformer requireTransformer(EtlJob job, String type) {
+        Transformer transformer = registry.getTransformer(type);
+        if (transformer == null) {
+            throw new TransformationException("Transformer '%s' is not registered".formatted(type), job.getJobId(), null);
+        }
+        return transformer;
+    }
+
+    private Loader requireLoader(EtlJob job, String type) {
+        Loader loader = registry.getLoader(type);
+        if (loader == null) {
+            throw new LoadingException("Loader '%s' is not registered".formatted(type), job.getJobId(), null);
+        }
+        return loader;
+    }
+
+    private static final class StructuredEtlPipeline implements EtlPipeline {
+
+        private final Logger pipelineLog = LoggerFactory.getLogger(StructuredEtlPipeline.class);
+
+        private final Extractor extractor;
+        private final Transformer transformer;
+        private final Loader loader;
+        private final DeadLetterQueue deadLetterQueue;
+        private final EtlMetrics metrics;
+
+        private StructuredEtlPipeline(
+                Extractor extractor,
+                Transformer transformer,
+                Loader loader,
+                DeadLetterQueue deadLetterQueue,
+                EtlMetrics metrics
+        ) {
+            this.extractor = Objects.requireNonNull(extractor, "extractor");
+            this.transformer = Objects.requireNonNull(transformer, "transformer");
+            this.loader = Objects.requireNonNull(loader, "loader");
+            this.deadLetterQueue = Objects.requireNonNull(deadLetterQueue, "deadLetterQueue");
+            this.metrics = Objects.requireNonNull(metrics, "metrics");
+        }
+
+        @Override
+        public void run(EtlJob job) {
+            Objects.requireNonNull(job, "job");
+            metrics.onJobStatusChanged(job, EtlJobStatus.RUNNING);
+            try {
+                Collection<EtlRecord> extracted = extract(job);
+                Collection<EtlRecord> transformed = transform(job, extracted);
+                load(job, transformed);
+                metrics.onJobStatusChanged(job, EtlJobStatus.COMPLETED);
+            } catch (RuntimeException e) {
+                metrics.onJobStatusChanged(job, EtlJobStatus.FAILED);
+                throw e;
+            }
+        }
+
+        private Collection<EtlRecord> extract(EtlJob job) {
+            metrics.onJobStatusChanged(job, EtlJobStatus.EXTRACTING);
+            metrics.onExtractStart(job);
+            long startedAtNanos = System.nanoTime();
+            try {
+                Collection<EtlRecord> records = extractor.extract(job);
+                Collection<EtlRecord> safeRecords = records == null ? List.of() : records;
+                metrics.onExtractComplete(job, safeRecords.size(), elapsedMillis(startedAtNanos));
+                return safeRecords;
+            } catch (EtlException e) {
+                metrics.onError(job, e);
+                deadLetterQueue.publish(e);
+                throw e;
+            } catch (Exception e) {
+                ExtractionException wrapped = new ExtractionException(
+                        "Failed to extract records",
+                        job.getJobId(),
+                        null,
+                        EtlErrorSeverity.CRITICAL,
+                        e
+                );
+                metrics.onError(job, wrapped);
+                deadLetterQueue.publish(wrapped);
+                throw wrapped;
+            }
+        }
+
+        private Collection<EtlRecord> transform(EtlJob job, Collection<EtlRecord> records) {
+            Collection<EtlRecord> safeRecords = records == null ? List.of() : records;
+            metrics.onJobStatusChanged(job, EtlJobStatus.TRANSFORMING);
+            metrics.onTransformStart(job, safeRecords.size());
+            long startedAtNanos = System.nanoTime();
+            if (safeRecords.isEmpty()) {
+                metrics.onTransformComplete(job, 0, elapsedMillis(startedAtNanos));
+                return List.of();
+            }
+
+            List<EtlRecord> transformed = new ArrayList<>();
+            for (EtlRecord record : safeRecords) {
+                try {
+                    Collection<EtlRecord> result = transformer.transform(List.of(record), job);
+                    if (result != null && !result.isEmpty()) {
+                        transformed.addAll(result);
+                        result.forEach(created -> metrics.onRecordProcessed(job, created));
+                    }
+                } catch (EtlException e) {
+                    handleStageException(job, e);
+                } catch (Exception e) {
+                    TransformationException wrapped = new TransformationException(
+                            "Failed to transform record with offset %s".formatted(record.getOffset()),
+                            job.getJobId(),
+                            record,
+                            EtlErrorSeverity.CRITICAL,
+                            e
+                    );
+                    handleStageException(job, wrapped);
+                }
+            }
+
+            metrics.onTransformComplete(job, transformed.size(), elapsedMillis(startedAtNanos));
+            return transformed;
+        }
+
+        private void load(EtlJob job, Collection<EtlRecord> records) {
+            Collection<EtlRecord> safeRecords = records == null ? List.of() : records;
+            metrics.onJobStatusChanged(job, EtlJobStatus.LOADING);
+            metrics.onLoadStart(job, safeRecords.size());
+            long startedAtNanos = System.nanoTime();
+            if (safeRecords.isEmpty()) {
+                metrics.onLoadComplete(job, 0, elapsedMillis(startedAtNanos));
+                return;
+            }
+
+            try {
+                loader.load(safeRecords, job);
+                metrics.onLoadComplete(job, safeRecords.size(), elapsedMillis(startedAtNanos));
+            } catch (EtlException e) {
+                metrics.onError(job, e);
+                deadLetterQueue.publish(e);
+                throw e;
+            } catch (Exception e) {
+                LoadingException wrapped = new LoadingException(
+                        "Failed to load records",
+                        job.getJobId(),
+                        null,
+                        EtlErrorSeverity.CRITICAL,
+                        e
+                );
+                metrics.onError(job, wrapped);
+                deadLetterQueue.publish(wrapped);
+                throw wrapped;
+            }
+        }
+
+        private void handleStageException(EtlJob job, EtlException exception) {
+            metrics.onError(job, exception);
+            deadLetterQueue.publish(exception);
+            if (exception.isCritical() || exception.getRecord() == null) {
+                throw exception;
+            }
+
+            pipelineLog.warn(
+                    "Job '{}' - skipping record due to non-critical {} error: {}",
+                    job.getJobId(),
+                    exception.getStage(),
+                    exception.getMessage()
+            );
+        }
+
+        private static long elapsedMillis(long startedAtNanos) {
+            return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
+        }
     }
 }

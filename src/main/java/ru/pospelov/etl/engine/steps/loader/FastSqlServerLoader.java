@@ -6,6 +6,9 @@ import com.microsoft.sqlserver.jdbc.SQLServerConnection;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
+import ru.pospelov.etl.engine.exception.EtlException;
+import ru.pospelov.etl.engine.exception.LoadingException;
 import ru.pospelov.etl.engine.model.EtlBulkRecord;
 import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
@@ -18,8 +21,10 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -44,47 +49,72 @@ public class FastSqlServerLoader implements Loader {
 
         List<EtlRecord> allRecords = new ArrayList<>(records);
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        List<Future<?>> futures = new ArrayList<>();
         Instant start = Instant.now();
 
         for (int from = 0; from < allRecords.size(); from += batchSize) {
             int to = Math.min(from + batchSize, allRecords.size());
             List<EtlRecord> batch = new ArrayList<>(allRecords.subList(from, to));
 
-            executor.submit(() -> {
+            futures.add(executor.submit(() -> {
                 try (Connection connection = dataSource.getConnection()) {
                     SQLServerConnection sqlConn = connection.unwrap(SQLServerConnection.class);
-                    SQLServerBulkCopy bulkCopy = new SQLServerBulkCopy(sqlConn);
-                    bulkCopy.setDestinationTableName(targetTable);
+                    try (SQLServerBulkCopy bulkCopy = new SQLServerBulkCopy(sqlConn)) {
+                        bulkCopy.setDestinationTableName(targetTable);
 
-                    SQLServerBulkCopyOptions options = new SQLServerBulkCopyOptions();
-                    options.setTableLock(true);
-                    options.setCheckConstraints(false);
-                    options.setFireTriggers(false);
-                    options.setKeepNulls(true);
-                    bulkCopy.setBulkCopyOptions(options);
+                        SQLServerBulkCopyOptions options = new SQLServerBulkCopyOptions();
+                        options.setTableLock(true);
+                        options.setCheckConstraints(false);
+                        options.setFireTriggers(false);
+                        options.setKeepNulls(true);
+                        bulkCopy.setBulkCopyOptions(options);
 
-                    for (String column : batch.getFirst().getAll().keySet()) {
-                        bulkCopy.addColumnMapping(column, column);
+                        for (String column : batch.get(0).getAll().keySet()) {
+                            bulkCopy.addColumnMapping(column, column);
+                        }
+
+                        bulkCopy.writeToServer(new EtlBulkRecord(batch));
+                        log.info("Thread {} inserted {} rows", Thread.currentThread().getName(), batch.size());
                     }
-
-                    bulkCopy.writeToServer(new EtlBulkRecord(batch));
-                    log.info("Thread {} inserted {} rows", Thread.currentThread().getName(), batch.size());
-
                 } catch (SQLException e) {
-                    log.error("Bulk insert failed in thread {}", Thread.currentThread().getName(), e);
-                    throw new RuntimeException(e);
+                    throw new LoadingException(
+                            "Bulk insert failed",
+                            job.getJobId(),
+                            batch.isEmpty() ? null : batch.get(0),
+                            EtlErrorSeverity.CRITICAL,
+                            e
+                    );
                 }
-            });
+            }));
         }
 
-        executor.shutdown();
         try {
-            if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
-                log.warn("Fast SQL loader did not finish in time");
+            for (Future<?> future : futures) {
+                try {
+                    future.get();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new LoadingException("Fast SQL loader interrupted", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
+                } catch (ExecutionException e) {
+                    Throwable cause = e.getCause();
+                    if (cause instanceof EtlException etlException) {
+                        throw etlException;
+                    }
+                    throw new LoadingException("Fast SQL loader failed", job.getJobId(), null, EtlErrorSeverity.CRITICAL, cause);
+                }
             }
+
+            executor.shutdown();
+            if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
+                throw new LoadingException("Fast SQL loader did not finish in time", job.getJobId(), null);
+            }
+        } catch (EtlException e) {
+            throw e;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RuntimeException("FastSqlServerLoader interrupted", e);
+            throw new LoadingException("FastSqlServerLoader interrupted", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
+        } finally {
+            executor.shutdownNow();
         }
 
         Instant end = Instant.now();

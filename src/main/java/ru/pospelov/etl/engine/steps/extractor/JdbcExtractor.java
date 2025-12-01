@@ -7,6 +7,9 @@ import org.apache.avro.generic.GenericRecord;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.stereotype.Component;
+import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
+import ru.pospelov.etl.engine.exception.EtlException;
+import ru.pospelov.etl.engine.exception.ExtractionException;
 import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
 
@@ -38,8 +41,8 @@ public class JdbcExtractor implements Extractor {
         if (query == null) {
             query = Objects.toString(job.getParam("query"), "");
         }
-        if (query.isEmpty()) {
-            throw new IllegalArgumentException("Source query is required for JdbcExtractor");
+        if (query.isBlank()) {
+            throw new ExtractionException("Source query is required for JdbcExtractor", job.getJobId());
         }
 
         int batchSize = (int) job.getParamOrDefault("batchSize", 1000);
@@ -54,60 +57,65 @@ public class JdbcExtractor implements Extractor {
             avroSchema = new Schema.Parser().parse(schemaStr);
         }
 
-        final List<EtlRecord> result = Collections.synchronizedList(new ArrayList<EtlRecord>());
+        final List<EtlRecord> result = Collections.synchronizedList(new ArrayList<>());
         final Map<String, String> avroFieldLookup = buildAvroFieldLookup(avroSchema);
         final ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         final List<Future<?>> tasks = new ArrayList<>();
 
-        if (!partitionColumn.isEmpty() && partitionCount > 1) {
-            // Партиционированный режим
-            for (int p = 0; p < partitionCount; p++) {
-                final int part = p;
-                final String partQuery = query +
-                        (query.toLowerCase().contains("where") ? " AND " : " WHERE ") +
-                        partitionColumn + " = " + part;
-
-                tasks.add(executor.submit(new PartitionQueryTask(
-                        jdbcTemplate,
-                        partQuery,
-                        part,
-                        avroSchema,
-                        avroFieldLookup,
-                        keyColumn,
-                        result
-                )));
-            }
-        } else {
-            // Постаточный режим (offset / fetch next)
-            Integer totalRows = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM (" + query + ") t", Integer.class);
-            final int total = (totalRows == null) ? 0 : totalRows;
-
-            for (int offset = 0; offset < total; offset += batchSize) {
-                final int off = offset;
-
-                tasks.add(executor.submit(new OffsetQueryTask(
-                        jdbcTemplate,
-                        query,
-                        off,
-                        batchSize,
-                        avroSchema,
-                        avroFieldLookup,
-                        keyColumn,
-                        result
-                )));
-            }
-        }
-
-        waitForTasks(tasks);
-        executor.shutdown();
         try {
-            executor.awaitTermination(1, TimeUnit.HOURS);
+            if (!partitionColumn.isEmpty() && partitionCount > 1) {
+                for (int p = 0; p < partitionCount; p++) {
+                    final int part = p;
+                    final String partQuery = query +
+                            (query.toLowerCase().contains("where") ? " AND " : " WHERE ") +
+                            partitionColumn + " = " + part;
+
+                    tasks.add(executor.submit(new PartitionQueryTask(
+                            jdbcTemplate,
+                            partQuery,
+                            part,
+                            avroSchema,
+                            avroFieldLookup,
+                            keyColumn,
+                            result
+                    )));
+                }
+            } else {
+                Integer totalRows = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM (" + query + ") t", Integer.class);
+                final int total = (totalRows == null) ? 0 : totalRows;
+
+                for (int offset = 0; offset < total; offset += batchSize) {
+                    final int off = offset;
+
+                    tasks.add(executor.submit(new OffsetQueryTask(
+                            jdbcTemplate,
+                            query,
+                            off,
+                            batchSize,
+                            avroSchema,
+                            avroFieldLookup,
+                            keyColumn,
+                            result
+                    )));
+                }
+            }
+
+            waitForTasks(tasks, job.getJobId());
+            executor.shutdown();
+            if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
+                throw new ExtractionException("JdbcExtractor did not finish within timeout", job.getJobId());
+            }
+            return result;
+        } catch (EtlException e) {
+            throw e;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RuntimeException(e);
+            throw new ExtractionException("JdbcExtractor interrupted", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
+        } catch (Exception e) {
+            throw new ExtractionException("JdbcExtractor failed", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
+        } finally {
+            executor.shutdownNow();
         }
-
-        return result;
     }
 
     /**
@@ -329,15 +337,19 @@ public class JdbcExtractor implements Extractor {
         return lookup.get(columnLabel.toLowerCase(Locale.ROOT));
     }
 
-    private static void waitForTasks(List<Future<?>> tasks) {
+    private static void waitForTasks(List<Future<?>> tasks, String jobId) {
         for (Future<?> task : tasks) {
             try {
                 task.get();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new RuntimeException("JdbcExtractor interrupted", e);
+                throw new ExtractionException("JdbcExtractor interrupted", jobId, null, EtlErrorSeverity.CRITICAL, e);
             } catch (ExecutionException e) {
-                throw new RuntimeException("JdbcExtractor task failed", e.getCause());
+                Throwable cause = e.getCause();
+                if (cause instanceof EtlException etlException) {
+                    throw etlException;
+                }
+                throw new ExtractionException("JdbcExtractor task failed", jobId, null, EtlErrorSeverity.CRITICAL, cause);
             }
         }
     }

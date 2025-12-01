@@ -2,6 +2,8 @@ package ru.pospelov.etl.engine.steps.transformer;
 
 import org.apache.avro.generic.GenericRecord;
 import org.springframework.stereotype.Component;
+import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
+import ru.pospelov.etl.engine.exception.TransformationException;
 import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
 
@@ -18,15 +20,20 @@ public class AvroToRecordTransformer implements Transformer {
     @Override
     public Collection<EtlRecord> transform(Collection<EtlRecord> records, EtlJob job) {
         return records.stream()
-                .map(this::fromAvro)
+                .map(record -> fromAvro(record, job))
                 .toList();
     }
 
-    private EtlRecord fromAvro(EtlRecord raw) {
+    private EtlRecord fromAvro(EtlRecord raw, EtlJob job) {
         Object value = raw.get("value");
 
         if (!(value instanceof GenericRecord avro)) {
-            throw new IllegalStateException("Expected GenericRecord, got: " + value + " for record: " + raw);
+            throw new TransformationException(
+                    "Expected GenericRecord, got: " + value,
+                    job.getJobId(),
+                    raw,
+                    EtlErrorSeverity.NON_CRITICAL
+            );
         }
 
         EtlRecord record = new EtlRecord(

@@ -20,3 +20,5 @@ logging:
     org.apache.kafka: WARN
     org.apache.kafka.clients.consumer: WARN
     org.apache.kafka.common.utils.AppInfoParser: ERROR
+    io.confluent.kafka.serializers: WARN
+    io.confluent.kafka.serializers.KafkaAvroDeserializerConfig: WARN

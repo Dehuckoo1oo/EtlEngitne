@@ -2,12 +2,17 @@ package ru.pospelov.etl.engine.steps.extractor;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.avro.generic.GenericRecord;
-import org.apache.kafka.clients.consumer.*;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.springframework.stereotype.Component;
 import ru.pospelov.etl.engine.config.KafkaClientFactory;
+import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
+import ru.pospelov.etl.engine.exception.EtlException;
+import ru.pospelov.etl.engine.exception.ExtractionException;
 import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
 
@@ -30,69 +35,132 @@ public class KafkaExtractor implements Extractor {
 
     @Override
     public Collection<EtlRecord> extract(EtlJob job) {
-        String topic = job.getParam("topic").toString();
-        long startMillis = (long) job.getParam("startTimestamp");
-        long endMillis = (long) job.getParam("endTimestamp");
-        int threadCount = (int) job.getParamOrDefault("threads", 4);
-        String format = String.valueOf(job.getParamOrDefault("format", "string")); // "string" или "avro"
+        String topic = Objects.toString(job.getParam("topic"), "");
+        if (topic.isBlank()) {
+            throw new ExtractionException("Kafka topic is required", job.getJobId());
+        }
 
+        long startMillis = requireTimestamp(job, "startTimestamp");
+        long endMillis = requireTimestamp(job, "endTimestamp");
+        if (startMillis >= endMillis) {
+            throw new ExtractionException("startTimestamp must be before endTimestamp", job.getJobId());
+        }
+
+        int threadCount = ((Number) job.getParamOrDefault("threads", 4)).intValue();
+        String format = Objects.toString(job.getParamOrDefault("format", "string"), "string");
         boolean isAvro = format.equalsIgnoreCase("avro");
 
         Map<String, Object> consumerProps = consumerFactory.buildConsumerConfig("kafka-extractor", isAvro);
         List<EtlRecord> allRecords = Collections.synchronizedList(new ArrayList<>());
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        List<Future<?>> tasks = new ArrayList<>();
 
         try (KafkaConsumer<String, Object> metadataConsumer = new KafkaConsumer<>(consumerProps)) {
             List<PartitionInfo> partitions = metadataConsumer.partitionsFor(topic);
-            ExecutorService executor = Executors.newFixedThreadPool(threadCount);
-            List<Future<?>> tasks = new ArrayList<>();
+            if (partitions == null || partitions.isEmpty()) {
+                log.warn("No partitions found for topic {}", topic);
+                return List.of();
+            }
 
             for (PartitionInfo partition : partitions) {
-                tasks.add(executor.submit(() -> {
-                    TopicPartition tp = new TopicPartition(partition.topic(), partition.partition());
-                    try (KafkaConsumer<String, Object> consumer = new KafkaConsumer<>(consumerProps)) {
-                        consumer.assign(List.of(tp));
-                        Map<TopicPartition, OffsetAndTimestamp> offsets = consumer.offsetsForTimes(Map.of(tp, startMillis));
-                        OffsetAndTimestamp offsetAndTimestamp = offsets.get(tp);
-                        if (offsetAndTimestamp == null) return;
-
-                        consumer.seek(tp, offsetAndTimestamp.offset());
-
-                        while (true) {
-                            ConsumerRecords<String, Object> records = consumer.poll(Duration.ofMillis(500));
-                            if (records.isEmpty()) break;
-
-                            for (ConsumerRecord<String, Object> r : records.records(tp)) {
-                                if (r.timestamp() > endMillis) return;
-                                EtlRecord rec = new EtlRecord(
-                                        Instant.ofEpochMilli(r.timestamp()),
-                                        tp.toString(),
-                                        r.offset()
-                                );
-                                if (r.key() != null) {
-                                    rec.put("key", r.key());
-                                }
-                                rec.put("value", r.value());
-
-                                allRecords.add(rec);
-                            }
-                        }
-                    }
-                }));
+                TopicPartition tp = new TopicPartition(partition.topic(), partition.partition());
+                tasks.add(executor.submit(() ->
+                        consumePartition(job.getJobId(), consumerProps, tp, startMillis, endMillis, allRecords)
+                ));
             }
 
-            for (Future<?> task : tasks) {
-                task.get();
-            }
-
+            waitForTasks(tasks, job.getJobId());
             executor.shutdown();
-            executor.awaitTermination(1, TimeUnit.HOURS);
+            if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
+                throw new ExtractionException("Kafka extractor did not finish within timeout", job.getJobId());
+            }
 
+            return allRecords;
+        } catch (EtlException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ExtractionException("Kafka extraction interrupted", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
         } catch (Exception e) {
             log.error("Kafka extraction failed", e);
-            throw new RuntimeException(e);
+            throw new ExtractionException("Kafka extraction failed", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
+        } finally {
+            executor.shutdownNow();
         }
+    }
 
-        return allRecords;
+    private void consumePartition(
+            String jobId,
+            Map<String, Object> consumerProps,
+            TopicPartition tp,
+            long startMillis,
+            long endMillis,
+            List<EtlRecord> target
+    ) {
+        try (KafkaConsumer<String, Object> consumer = new KafkaConsumer<>(consumerProps)) {
+            consumer.assign(List.of(tp));
+            Map<TopicPartition, OffsetAndTimestamp> offsets = consumer.offsetsForTimes(Map.of(tp, startMillis));
+            OffsetAndTimestamp offsetAndTimestamp = offsets.get(tp);
+            if (offsetAndTimestamp == null) {
+                return;
+            }
+
+            consumer.seek(tp, offsetAndTimestamp.offset());
+
+            while (true) {
+                ConsumerRecords<String, Object> records = consumer.poll(Duration.ofMillis(500));
+                if (records.isEmpty()) {
+                    break;
+                }
+
+                for (ConsumerRecord<String, Object> record : records.records(tp)) {
+                    if (record.timestamp() > endMillis) {
+                        return;
+                    }
+                    EtlRecord etlRecord = new EtlRecord(
+                            Instant.ofEpochMilli(record.timestamp()),
+                            tp.toString(),
+                            record.offset()
+                    );
+                    if (record.key() != null) {
+                        etlRecord.put("key", record.key());
+                    }
+                    etlRecord.put("value", record.value());
+
+                    target.add(etlRecord);
+                }
+            }
+        } catch (Exception e) {
+            throw new ExtractionException(
+                    "Kafka extraction failed for partition " + tp,
+                    jobId,
+                    null,
+                    EtlErrorSeverity.CRITICAL,
+                    e
+            );
+        }
+    }
+
+    private static void waitForTasks(List<Future<?>> tasks, String jobId) throws InterruptedException {
+        for (Future<?> task : tasks) {
+            try {
+                task.get();
+            } catch (ExecutionException e) {
+                Throwable cause = e.getCause();
+                if (cause instanceof EtlException etlException) {
+                    throw etlException;
+                }
+                throw new ExtractionException("Kafka extraction task failed", jobId, null, EtlErrorSeverity.CRITICAL, cause);
+            }
+        }
+    }
+
+    private static long requireTimestamp(EtlJob job, String key) {
+        Object value = job.getParam(key);
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        throw new ExtractionException("Parameter '%s' must be a number".formatted(key), job.getJobId());
     }
 }
 
