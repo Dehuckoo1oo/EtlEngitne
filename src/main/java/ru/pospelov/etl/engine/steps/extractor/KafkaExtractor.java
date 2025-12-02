@@ -118,7 +118,7 @@ public class KafkaExtractor implements Extractor {
                     if (record.timestamp() > endMillis) {
                         // Send remaining batch before exiting
                         if (!currentBatch.isEmpty()) {
-                            batchConsumer.accept(currentBatch);
+                            batchConsumer.accept(new ArrayList<>(currentBatch));
                         }
                         return;
                     }
@@ -145,7 +145,7 @@ public class KafkaExtractor implements Extractor {
             
             // Send remaining records
             if (!currentBatch.isEmpty()) {
-                batchConsumer.accept(currentBatch);
+                batchConsumer.accept(new ArrayList<>(currentBatch));
             }
         } catch (Exception e) {
             throw new ExtractionException(
