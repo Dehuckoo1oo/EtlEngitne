@@ -115,7 +115,7 @@ import org.apache.avro.Schema;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 
-String schemaString = new String(Files.readAllBytes(Paths.get("src/main/resources/avro/order-events-value.avro")));
+String schemaString = new String(Files.readAllBytes(Paths.get("src/main/resources/avro/order-events-value.avsc")));
 Schema schema = new Schema.Parser().parse(schemaString);
 ```
 

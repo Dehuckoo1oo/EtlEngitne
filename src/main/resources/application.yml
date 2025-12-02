@@ -6,6 +6,13 @@ spring:
     username: sa
     password: verYs3cret
     driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 2
+      connection-timeout: 300000     # 5 минут
+      idle-timeout: 600000           # 10 минут
+      max-lifetime: 1800000          # 30 минут
+      connection-test-query: SELECT 1
   main:
     banner-mode: off
   sql.init:

@@ -7,10 +7,8 @@ import ru.pospelov.etl.engine.engine.EtlComponentRegistry;
 import ru.pospelov.etl.engine.engine.EtlPipeline;
 import ru.pospelov.etl.engine.engine.EtlPipelineFactory;
 import ru.pospelov.etl.engine.engine.InMemoryDeadLetterQueue;
-import ru.pospelov.etl.engine.validation.DefaultJobValidator;
-import ru.pospelov.etl.engine.validation.ExtractorValidator;
-import ru.pospelov.etl.engine.validation.LoaderValidator;
-import ru.pospelov.etl.engine.validation.TransformerValidator;
+import ru.pospelov.etl.engine.validation.JobValidator;
+import ru.pospelov.etl.engine.validation.ValidationResult;
 import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
 import ru.pospelov.etl.engine.exception.LoadingException;
 import ru.pospelov.etl.engine.exception.TransformationException;
@@ -45,7 +43,9 @@ class EtlErrorHandlingTest {
         );
         EtlJob job = createJob("job-non-critical", "fixed-extractor", "failing-transformer", "recording-loader");
 
-        pipeline.run(job);
+        assertThatThrownBy(() -> pipeline.run(job))
+                .isInstanceOf(TransformationException.class)
+                .hasMessageContaining("Synthetic transformation error");
 
         List<EtlRecord> loaded = loader.getLoadedRecords();
         assertThat(loaded).hasSize(1);
@@ -90,12 +90,7 @@ class EtlErrorHandlingTest {
                 List.of(loader)
         );
         EtlMetricsCollector metricsCollector = new EtlMetricsCollector();
-        DefaultJobValidator jobValidator = new DefaultJobValidator(
-                registry,
-                new ExtractorValidator(),
-                new TransformerValidator(),
-                new LoaderValidator()
-        );
+        JobValidator jobValidator = job -> new ValidationResult();
         EtlPipelineFactory factory = new EtlPipelineFactory(registry, deadLetterQueue, metricsCollector, jobValidator);
         EtlJob templateJob = createJob("template", extractor.getType(), transformer.getType(), loader.getType());
         return factory.create(templateJob);
@@ -116,7 +111,8 @@ class EtlErrorHandlingTest {
             first.put("value", "ok");
             EtlRecord second = new EtlRecord(Instant.now(), "test", 2L);
             second.put("value", "bad");
-            batchConsumer.accept(List.of(first, second));
+            batchConsumer.accept(List.of(first));
+            batchConsumer.accept(List.of(second));
         }
 
         @Override
@@ -134,14 +130,15 @@ class EtlErrorHandlingTest {
 
         @Override
         public Collection<EtlRecord> transform(Collection<EtlRecord> etlRecords, EtlJob job) {
-            EtlRecord record = etlRecords.iterator().next();
-            if (record.getOffset() == failingOffset) {
-                throw new TransformationException(
-                        "Synthetic transformation error",
-                        job.getJobId(),
-                        record,
-                        EtlErrorSeverity.NON_CRITICAL
-                );
+            for (EtlRecord record : etlRecords) {
+                if (record.getOffset() == failingOffset) {
+                    throw new TransformationException(
+                            "Synthetic transformation error",
+                            job.getJobId(),
+                            record,
+                            EtlErrorSeverity.NON_CRITICAL
+                    );
+                }
             }
             return etlRecords;
         }
@@ -194,5 +191,6 @@ class EtlErrorHandlingTest {
             return "failing-loader";
         }
     }
+
 }
 

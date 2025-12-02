@@ -6,12 +6,11 @@ import ru.pospelov.etl.engine.engine.EtlComponentRegistry;
 import ru.pospelov.etl.engine.engine.EtlPipeline;
 import ru.pospelov.etl.engine.engine.EtlPipelineFactory;
 import ru.pospelov.etl.engine.engine.InMemoryDeadLetterQueue;
-import ru.pospelov.etl.engine.validation.DefaultJobValidator;
-import ru.pospelov.etl.engine.validation.ExtractorValidator;
-import ru.pospelov.etl.engine.validation.LoaderValidator;
-import ru.pospelov.etl.engine.validation.TransformerValidator;
+import ru.pospelov.etl.engine.validation.JobValidator;
+import ru.pospelov.etl.engine.validation.ValidationResult;
+import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
 import ru.pospelov.etl.engine.exception.EtlException;
-import ru.pospelov.etl.engine.exception.ExtractionException;
+import ru.pospelov.etl.engine.exception.TransformationException;
 import ru.pospelov.etl.engine.metrics.EtlJobMetricsSnapshot;
 import ru.pospelov.etl.engine.metrics.EtlJobStatus;
 import ru.pospelov.etl.engine.metrics.EtlMetrics;
@@ -72,23 +71,23 @@ class EtlPipelineMetricsTest {
     }
 
     @Test
-    void failingExtractorMarksStatusFailedAndCountsError() {
+    void failingTransformerMarksStatusFailedAndCountsError() {
         EtlMetricsCollector collector = new EtlMetricsCollector();
         RecordingMetricsListener listener = new RecordingMetricsListener();
         collector.registerListener(listener);
 
         EtlPipeline pipeline = createPipeline(
                 new InMemoryDeadLetterQueue(),
-                new FailingExtractor(),
-                new PassThroughTransformer(),
+                new FixedExtractor(),
+                new FailingTransformer(),
                 new RecordingLoader(),
                 collector
         );
 
-        EtlJob job = createJob("metrics-failure", "failing-extractor", "pass-transformer", "recording-loader");
+        EtlJob job = createJob("metrics-failure", "fixed-extractor", "failing-transformer", "recording-loader");
 
         assertThatThrownBy(() -> pipeline.run(job))
-                .isInstanceOf(ExtractionException.class)
+                .isInstanceOf(TransformationException.class)
                 .hasMessageContaining("boom");
 
         EtlJobMetricsSnapshot snapshot = collector.getSnapshot(job.getJobId()).orElseThrow();
@@ -100,6 +99,7 @@ class EtlPipelineMetricsTest {
                 .containsExactly(
                         EtlJobStatus.RUNNING,
                         EtlJobStatus.EXTRACTING,
+                        EtlJobStatus.TRANSFORMING,
                         EtlJobStatus.FAILED
                 );
         assertThat(listener.errorCount()).isEqualTo(1);
@@ -117,12 +117,7 @@ class EtlPipelineMetricsTest {
                 List.of(transformer),
                 List.of(loader)
         );
-        DefaultJobValidator jobValidator = new DefaultJobValidator(
-                registry,
-                new ExtractorValidator(),
-                new TransformerValidator(),
-                new LoaderValidator()
-        );
+        JobValidator jobValidator = job -> new ValidationResult();
         EtlPipelineFactory factory = new EtlPipelineFactory(registry, deadLetterQueue, collector, jobValidator);
         EtlJob templateJob = createJob("template", extractor.getType(), transformer.getType(), loader.getType());
         return factory.create(templateJob);
@@ -150,18 +145,6 @@ class EtlPipelineMetricsTest {
         }
     }
 
-    private static class FailingExtractor implements Extractor {
-        @Override
-        public void extract(EtlJob job, java.util.function.Consumer<Collection<EtlRecord>> batchConsumer) {
-            throw new ExtractionException("boom", job.getJobId());
-        }
-
-        @Override
-        public String getType() {
-            return "failing-extractor";
-        }
-    }
-
     private static class PassThroughTransformer implements Transformer {
         @Override
         public Collection<EtlRecord> transform(Collection<EtlRecord> etlRecords, EtlJob job) {
@@ -171,6 +154,18 @@ class EtlPipelineMetricsTest {
         @Override
         public String getType() {
             return "pass-transformer";
+        }
+    }
+
+    private static class FailingTransformer implements Transformer {
+        @Override
+        public Collection<EtlRecord> transform(Collection<EtlRecord> etlRecords, EtlJob job) {
+            throw new TransformationException("boom", job.getJobId(), null, EtlErrorSeverity.CRITICAL);
+        }
+
+        @Override
+        public String getType() {
+            return "failing-transformer";
         }
     }
 
@@ -250,5 +245,6 @@ class EtlPipelineMetricsTest {
             return errorCount;
         }
     }
+
 }
 

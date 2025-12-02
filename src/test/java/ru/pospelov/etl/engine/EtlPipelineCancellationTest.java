@@ -7,10 +7,8 @@ import ru.pospelov.etl.engine.engine.EtlComponentRegistry;
 import ru.pospelov.etl.engine.engine.EtlPipeline;
 import ru.pospelov.etl.engine.engine.EtlPipelineFactory;
 import ru.pospelov.etl.engine.engine.InMemoryDeadLetterQueue;
-import ru.pospelov.etl.engine.validation.DefaultJobValidator;
-import ru.pospelov.etl.engine.validation.ExtractorValidator;
-import ru.pospelov.etl.engine.validation.LoaderValidator;
-import ru.pospelov.etl.engine.validation.TransformerValidator;
+import ru.pospelov.etl.engine.validation.JobValidator;
+import ru.pospelov.etl.engine.validation.ValidationResult;
 import ru.pospelov.etl.engine.metrics.EtlJobMetricsSnapshot;
 import ru.pospelov.etl.engine.metrics.EtlJobStatus;
 import ru.pospelov.etl.engine.metrics.EtlMetricsCollector;
@@ -192,12 +190,7 @@ class EtlPipelineCancellationTest {
                 List.of(transformer),
                 List.of(loader)
         );
-        DefaultJobValidator jobValidator = new DefaultJobValidator(
-                registry,
-                new ExtractorValidator(),
-                new TransformerValidator(),
-                new LoaderValidator()
-        );
+        JobValidator jobValidator = job -> new ValidationResult();
         EtlPipelineFactory factory = new EtlPipelineFactory(registry, deadLetterQueue, metricsCollector, jobValidator);
         EtlJob templateJob = createJob("template", extractor.getType(), transformer.getType(), loader.getType());
         return factory.create(templateJob);
@@ -279,5 +272,6 @@ class EtlPipelineCancellationTest {
             return loadedRecords;
         }
     }
+
 }
 
