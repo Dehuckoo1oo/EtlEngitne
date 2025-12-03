@@ -1,4 +1,4 @@
-# Roadmap - План развития ETL Engine
+﻿# Roadmap - План развития ETL Engine
 
 Данный документ описывает задачи по развитию ядра ETL движка для обеспечения надежности, производительности и удобства использования.
 
@@ -282,6 +282,158 @@
 **Файлы для изменения:**
 - Создать `ru.pospelov.etl.engine.resources.ConnectionManager`
 - Обновить компоненты для использования централизованного управления
+
+### 16. API для управления job'ами без расписания
+
+**Цель:** Добавить REST API для CRUD и ручного запуска ETL job-ов без планировщика.
+
+**Шаги:**
+- Вынести отдельный пакет u.pospelov.etl.engine.api.* для controller/service/repository, хранить job-ы in-memory на первом этапе.
+- REST-эндпоинты:
+  - POST /api/jobs (создать)
+  - PUT /api/jobs/{id} (обновить)
+  - GET /api/jobs/{id} и GET /api/jobs (получить/список)
+  - DELETE /api/jobs/{id} (удалить)
+  - POST /api/jobs/{id}/run (ручной запуск без расписания)
+- Описание job приходит в теле запроса: id/
+ame, sourceQuery, 	arget, params (extractor/transformer/loader, topic/format/threads/streamBatchSize/окно timestamps и др.). Планировщик пока не подключаем.
+- Ручной старт вызывает EtlPipelineFactory.create(job).run(job) из слоя сервиса
+- Использовать интерфейс `JobRepository` для абстракции хранилища (реализация в пункте 17)
+- На первом этапе можно использовать in-memory реализацию для быстрого старта, затем перейти на БД
+
+**Файлы для создания/изменения:**
+- `src/main/java/ru/pospelov/etl/engine/api/controller/JobController.java` - REST контроллер
+- `src/main/java/ru/pospelov/etl/engine/api/service/JobService.java` - бизнес-логика
+- `src/main/java/ru/pospelov/etl/engine/api/repository/JobRepository.java` - интерфейс репозитория
+- `src/main/java/ru/pospelov/etl/engine/api/repository/InMemoryJobRepository.java` - in-memory реализация
+- `src/main/java/ru/pospelov/etl/engine/api/dto/JobRequest.java` - DTO для запросов
+- `src/main/java/ru/pospelov/etl/engine/api/dto/JobResponse.java` - DTO для ответов
+
+**Примеры REST-запросов (KafkaToSqlIntegrationTest):**
+- SQL -> Kafka:
+  `json
+  POST /api/jobs
+  Content-Type: application/json
+
+  {
+    "id": "sql-to-kafka",
+    "sourceQuery": "SELECT * FROM SUPPORT.dbo.order_src",
+    "target": null,
+    "params": {
+      "extractorType": "sql",
+      "loaderType": "kafka",
+      "transformerType": "noop",
+      "topic": "order-events-value",
+      "format": "avro",
+      "threads": 8,
+      "streamBatchSize": 100000,
+      "avroSchema": "<schema из registry>",
+      "keyColumn": "order_id",
+      "partitionColumn": "bucket",
+      "partitions": 72
+    }
+  }
+  `
+- Kafka -> SQL:
+  `json
+  POST /api/jobs
+  Content-Type: application/json
+
+  {
+    "id": "kafka-to-sql",
+    "sourceQuery": null,
+    "target": "SUPPORT.dbo.order_dst",
+    "params": {
+      "extractorType": "kafka",
+      "transformerType": "avro",
+      "loaderType": "fast-sql",
+      "topic": "order-events-value",
+      "format": "avro",
+      "startTimestamp": "<значение startTimestamp из теста>",
+      "endTimestamp": "<значение endTimestamp из теста>",
+      "streamBatchSize": 100000,
+      "threads": 8
+    }
+  }
+  `
+- Ручной запуск: POST /api/jobs/kafka-to-sql/run (payload опционален, параметры можно переопределить при необходимости).
+
+**Ресурсы для контекста:**
+- src/test/java/ru/pospelov/etl/engine/KafkaToSqlIntegrationTest.java — параметры для направлений SQL->Kafka и Kafka->SQL
+- src/main/java/ru/pospelov/etl/engine/engine/EtlPipelineFactory.java — точка запуска конвейера
+
+### 17. Персистентное хранилище job'ов в БД
+
+**Цель:** Реализовать постоянное хранение ETL job'ов в базе данных вместо in-memory хранилища.
+
+**Требуется:**
+- Создать JPA-сущность `JobEntity` для хранения job'ов:
+  - `id` (String, PRIMARY KEY) - уникальный идентификатор job'а
+  - `name` (String) - название job'а
+  - `sourceQuery` (String, TEXT) - SQL-запрос источника или null для Kafka
+  - `target` (String) - целевая таблица или null для Kafka
+  - `params` (String, TEXT/JSON) - параметры job'а в формате JSON
+  - `createdAt` (Timestamp) - дата создания
+  - `updatedAt` (Timestamp) - дата последнего обновления
+  - `createdBy` (String) - пользователь создавший job
+  - `status` (String) - статус job'а (ACTIVE/DISABLED/ARCHIVED)
+  - `description` (String, TEXT) - описание назначения job'а
+- Создать интерфейс `JobRepository` с методами:
+  - `save(JobEntity job)` - создать или обновить job
+  - `findById(String id)` - получить job по id
+  - `findAll()` - получить все job'ы
+  - `findByStatus(String status)` - получить job'ы по статусу
+  - `deleteById(String id)` - удалить job
+  - `existsById(String id)` - проверить существование job'а
+- Реализовать JPA-репозиторий `JpaJobRepository extends JpaRepository<JobEntity, String>`
+- Создать сервис `JobService` для бизнес-логики:
+  - Конвертация между `EtlJob` и `JobEntity`
+  - Валидация перед сохранением
+  - Обработка уникальности id
+- Настроить источник данных через `application.properties` или `application.yml`:
+  - Параметры подключения к БД (url, username, password)
+  - Настройки пула соединений (HikariCP)
+  - Настройки JPA/Hibernate (ddl-auto, показ SQL)
+- Создать Liquibase/Flyway миграции для создания таблицы `etl_jobs`:
+  ```sql
+  CREATE TABLE etl_jobs (
+    id VARCHAR(255) PRIMARY KEY,
+    name VARCHAR(500) NOT NULL,
+    source_query TEXT,
+    target VARCHAR(500),
+    params TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(255),
+    status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+    description TEXT
+  );
+  CREATE INDEX idx_etl_jobs_status ON etl_jobs(status);
+  CREATE INDEX idx_etl_jobs_created_at ON etl_jobs(created_at);
+  ```
+- Обновить REST API контроллер (из пункта 16) для использования `JobService`
+- Добавить обработку ошибок:
+  - Дубликат id при создании
+  - Job не найден при обновлении/удалении
+  - Ошибки подключения к БД
+  - Невалидный JSON в params
+
+**Файлы для создания/изменения:**
+- `src/main/java/ru/pospelov/etl/engine/api/entity/JobEntity.java` - JPA-сущность
+- `src/main/java/ru/pospelov/etl/engine/api/repository/JobRepository.java` - интерфейс репозитория
+- `src/main/java/ru/pospelov/etl/engine/api/repository/JpaJobRepository.java` - JPA-реализация
+- `src/main/java/ru/pospelov/etl/engine/api/service/JobService.java` - бизнес-логика
+- `src/main/java/ru/pospelov/etl/engine/api/controller/JobController.java` - REST контроллер (обновить)
+- `src/main/resources/application.yml` - конфигурация БД
+- `src/main/resources/db/migration/V1__create_etl_jobs_table.sql` - миграция БД
+- `src/main/java/ru/pospelov/etl/engine/api/mapper/JobMapper.java` - конвертер EtlJob ↔ JobEntity
+
+**Преимущества:**
+- Постоянное хранение конфигураций job'ов (переживает перезапуск приложения)
+- Возможность аудита изменений (createdAt, updatedAt, createdBy)
+- Централизованное управление job'ами для нескольких инстансов приложения
+- Возможность резервного копирования конфигураций
+- Поддержка версионирования схемы БД через миграции
 
 ## Примечания
 

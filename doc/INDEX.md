@@ -1,101 +1,141 @@
-# ETL Engine - Оглавление документации
+# 📚 Документация ETL Engine
 
-## Основная документация
+## Навигация
 
-1. [README.md](README.md) - Общая документация проекта
-   - Описание и архитектура
-   - Компоненты ETL
-   - Конфигурация
-   - Использование
+### 🚀 Начало работы
+1. **[README.md](../README.md)** - Общее описание проекта и возможностей
+2. **[QUICK_START_EXAMPLE.md](QUICK_START_EXAMPLE.md)** - Быстрый старт: запуск первого Job за 5 минут
+3. **[JOB_CREATION_GUIDE.md](JOB_CREATION_GUIDE.md)** - Подробное руководство по созданию ETL Job
 
-## Инструкции по использованию
+### 🧪 Тестирование
+4. **[TESTING.md](../TESTING.md)** - Запуск и настройка тестов (unit, integration, E2E)
 
-2. [SQL_TO_KAFKA.md](SQL_TO_KAFKA.md) - Передача данных SQL → Kafka
-   - Простая передача (String формат)
-   - Передача с Avro схемой
-   - Партиционированная передача больших объемов
-   - Примеры и оптимизация
+### 🔌 API
+5. **[API.md](API.md)** - REST API для управления джобами
 
-3. [KAFKA_TO_SQL.md](KAFKA_TO_SQL.md) - Передача данных Kafka → SQL
-   - Простая передача (String формат)
-   - Передача с Avro схемой
-   - Использование FastSqlServerLoader
-   - Инкрементальная загрузка
-   - Примеры и оптимизация
+### 📅 Планирование
+6. **[ROADMAP.md](ROADMAP.md)** - План развития проекта
 
-4. [METRICS.md](METRICS.md) - Метрики и мониторинг
-   - Получение метрик и статусов задач
-   - Подписка на события выполнения
-   - Структура метрик
-   - Примеры использования
-   - API Reference
+---
 
-## План развития
+## Краткое содержание
 
-5. [ROADMAP.md](ROADMAP.md) - План развития ETL Engine
-   - Критичные задачи (высокий приоритет)
-   - Важные задачи (средний приоритет)
-   - Желательные задачи (низкий приоритет)
-   - Детальное описание каждой задачи
+### QUICK_START_EXAMPLE.md
+Практические примеры для быстрого старта:
+- Создание тестовых данных в SQL Server
+- Регистрация Avro схемы в Schema Registry
+- Простой пример SQL → Kafka
+- Обратная загрузка Kafka → SQL
+- Обработка больших объемов данных (1M записей)
+- Troubleshooting типичных ошибок
 
-## Быстрый старт
+**Время чтения:** 10 минут
+**Рекомендуется для:** Новых пользователей
 
-### SQL → Kafka
+### JOB_CREATION_GUIDE.md
+Полное руководство по созданию ETL Job:
+- Структура EtlJob и параметры
+- Все типы Extractor, Transformer, Loader
+- Примеры для разных сценариев
+- Конфигурация производительности
+- Best practices
+- Troubleshooting
+
+**Время чтения:** 30 минут
+**Рекомендуется для:** Разработчиков, использующих ETL Engine
+
+### TESTING.md
+Руководство по тестированию:
+- Запуск unit тестов (70 тестов, ~8 сек)
+- Запуск E2E тестов (требует Kafka + SQL Server)
+- CI/CD конфигурация (GitHub Actions примеры)
+- Архитектура тестов
+- Как это работает (исключение E2E по паттерну)
+
+**Время чтения:** 10 минут
+**Рекомендуется для:** Разработчиков и DevOps
+
+### API.md
+REST API документация:
+- Создание и управление джобами
+- Endpoints для CRUD операций
+- Примеры запросов curl
+- Схемы данных
+
+**Время чтения:** 15 минут
+**Рекомендуется для:** Разработчиков интеграций
+
+### ROADMAP.md
+План развития проекта:
+- Текущие возможности
+- Запланированные функции
+- Приоритеты разработки
+
+**Время чтения:** 5 минут
+**Рекомендуется для:** Всех пользователей
+
+---
+
+## Быстрая справка
+
+### Создание Job
 
 ```java
 EtlJob job = new EtlJob(
-    "sql-to-kafka",
+    "job-id",
     "SELECT * FROM source_table",
-    null,
-    Map.of(
-        "extractorType", "sql",
-        "transformerType", "noop",
-        "loaderType", "kafka",
-        "topic", "my-topic"
-    )
-);
-pipelineFactory.create(job).run(job);
-```
-
-### Kafka → SQL
-
-```java
-EtlJob job = new EtlJob(
-    "kafka-to-sql",
-    null,
     "target_table",
     Map.of(
-        "extractorType", "kafka",
+        "extractorType", "sql",
+        "loaderType", "kafka",
         "transformerType", "noop",
-        "loaderType", "sql",
-        "topic", "my-topic",
-        "startTimestamp", Instant.now().minusSeconds(600).toEpochMilli(),
-        "endTimestamp", Instant.now().toEpochMilli()
+        "threads", 8
     )
 );
+
 pipelineFactory.create(job).run(job);
 ```
 
-## Компоненты
+### Запуск тестов
 
-### Extractors (Извлекатели)
-- `sql` - JdbcExtractor - извлечение из SQL базы данных
-- `kafka` - KafkaExtractor - извлечение из Kafka топика
+```bash
+# Быстрые тесты
+mvn test
 
-### Transformers (Трансформеры)
-- `noop` - NoopTransformer - без преобразований
-- `avro` - AvroToRecordTransformer - преобразование Avro → Record
-- `record-to-avro` - RecordToAvroTransformer - преобразование Record → Avro
+# E2E тест
+mvn test -Dtest=KafkaToSqlIntegrationTest
+```
 
-### Loaders (Загрузчики)
-- `sql` - JdbcLoader - загрузка в SQL через batch INSERT
-- `fast-sql` - FastSqlServerLoader - быстрая загрузка в SQL Server через Bulk Copy
-- `kafka` - KafkaLoader - загрузка в Kafka топик
+### Основные параметры
+
+| Параметр | Значения | Описание |
+|----------|----------|----------|
+| `extractorType` | `sql`, `kafka` | Тип источника данных |
+| `loaderType` | `sql`, `fast-sql`, `kafka` | Тип загрузчика |
+| `transformerType` | `noop`, `avro` | Тип трансформера |
+| `threads` | 1-16 | Количество потоков |
+| `streamBatchSize` | 1000-100000 | Размер батча |
+
+---
+
+## Примеры из документации
+
+### SQL → Kafka
+См. [JOB_CREATION_GUIDE.md](JOB_CREATION_GUIDE.md#1-sql--kafka-экспорт-данных)
+
+### Kafka → SQL
+См. [JOB_CREATION_GUIDE.md](JOB_CREATION_GUIDE.md#2-kafka--sql-импорт-данных)
+
+### Большие объемы
+См. [QUICK_START_EXAMPLE.md](QUICK_START_EXAMPLE.md#пример-3-большой-объем-данных-1m-записей)
+
+---
 
 ## Полезные ссылки
 
-- [Spring Boot Documentation](https://spring.io/projects/spring-boot)
-- [Apache Kafka Documentation](https://kafka.apache.org/documentation/)
-- [Confluent Schema Registry](https://docs.confluent.io/platform/current/schema-registry/index.html)
-- [SQL Server Bulk Copy](https://learn.microsoft.com/en-us/sql/connect/jdbc/using-bulk-copy-with-the-jdbc-driver)
+- **Исходный код**: Интеграционный тест `src/test/java/.../KafkaToSqlIntegrationTest.java`
+- **Примеры**: `doc/QUICK_START_EXAMPLE.md`
 
+---
+
+**Последнее обновление:** 2025-12-03

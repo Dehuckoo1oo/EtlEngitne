@@ -13,11 +13,25 @@ spring:
       idle-timeout: 600000           # 10 минут
       max-lifetime: 1800000          # 30 минут
       connection-test-query: SELECT 1
+  jpa:
+    hibernate:
+      ddl-auto: validate              # Flyway управляет схемой, Hibernate только валидирует
+    show-sql: false                   # Отключить вывод SQL в консоль
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.SQLServerDialect
+        default_schema: service       # Схема по умолчанию
+    open-in-view: false               # Отключить open-session-in-view для production
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+    schemas: service
+    baseline-version: 0
+    validate-on-migrate: true
   main:
     banner-mode: off
-  sql.init:
-    mode: always
-    platform: sqlserver
 kafka:
   bootstrap-servers: localhost:29092,localhost:39092,localhost:49092
   schema-registry-url: http://localhost:8081

@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.TestPropertySource;
 import ru.pospelov.etl.engine.engine.EtlPipelineFactory;
 import ru.pospelov.etl.engine.model.EtlBulkRecord;
 import ru.pospelov.etl.engine.model.EtlJob;
@@ -30,6 +31,10 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
+@TestPropertySource(properties = {
+    "spring.flyway.enabled=false",
+    "spring.jpa.hibernate.ddl-auto=none"
+})
 public class KafkaToSqlIntegrationTest {
 
     @Autowired
