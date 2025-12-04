@@ -134,45 +134,89 @@ public class EtlPipelineFactory {
         public void run(EtlJob job) {
             Objects.requireNonNull(job, "job");
             cancellationToken.reset(); // Reset cancellation state for new execution
+
+            // Очищаем старые метрики при повторном запуске
+            if (metrics instanceof EtlMetricsCollector) {
+                ((EtlMetricsCollector) metrics).clear(job.getJobId());
+            }
+
             metrics.onJobStatusChanged(job, EtlJobStatus.RUNNING);
-            
+
             final AtomicInteger totalExtracted = new AtomicInteger(0);
             final AtomicInteger totalTransformed = new AtomicInteger(0);
             final AtomicInteger totalLoaded = new AtomicInteger(0);
+            final AtomicInteger batchCounter = new AtomicInteger(0);
             final long startTimeNanos = System.nanoTime();
-            
+            final long extractStartNanos = System.nanoTime();
+
             try {
                 cancellationToken.checkCancellation();
                 metrics.onJobStatusChanged(job, EtlJobStatus.EXTRACTING);
                 metrics.onExtractStart(job);
-                
+                pipelineLog.info("Job '{}' started: extractor={}, transformer={}, loader={}",
+                        job.getJobId(), extractor.getType(), transformer.getType(), loader.getType());
+
                 // Streaming pipeline: extract -> transform -> load in batches
                 extractor.extract(job, extractedBatch -> {
                     try {
                         cancellationToken.checkCancellation();
-                        
+
+                        int batchNum = batchCounter.incrementAndGet();
                         int extractedCount = extractedBatch.size();
                         totalExtracted.addAndGet(extractedCount);
-                        
+
+                        // Обновляем UI с количеством извлечённых записей в реальном времени
+                        // Передаём 0 для duration, чтобы не суммировать время батчей
+                        metrics.onExtractComplete(job, extractedCount, 0);
+
+                        if (pipelineLog.isDebugEnabled() || batchNum % 10 == 0) {
+                            pipelineLog.info("Job '{}' batch #{}: extracted {} records (total: {})",
+                                    job.getJobId(), batchNum, extractedCount, totalExtracted.get());
+                        }
+
                         // Transform batch
+                        long transformStartNanos = System.nanoTime();
                         metrics.onJobStatusChanged(job, EtlJobStatus.TRANSFORMING);
+                        metrics.onTransformStart(job, extractedCount);
+
                         Collection<EtlRecord> transformedBatch = transformBatch(job, extractedBatch);
-                        
+
+                        cancellationToken.checkCancellation();
+
                         int transformedCount = transformedBatch.size();
                         totalTransformed.addAndGet(transformedCount);
-                        transformedBatch.forEach(record -> metrics.onRecordProcessed(job, record));
-                        
-                        cancellationToken.checkCancellation();
-                        
+                        long transformDurationMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - transformStartNanos);
+                        metrics.onTransformComplete(job, transformedCount, transformDurationMillis);
+
+                        // УДАЛЕНО: onRecordProcessed для каждой записи убивает производительность
+                        // При миллионах записей это катастрофа: synchronized + listeners для каждой записи
+                        // transformedBatch.forEach(record -> metrics.onRecordProcessed(job, record));
+
+                        if (pipelineLog.isDebugEnabled()) {
+                            pipelineLog.debug("Job '{}' batch #{}: transformed {} records in {}ms",
+                                    job.getJobId(), batchNum, transformedCount, transformDurationMillis);
+                        }
+
                         // Load batch
                         if (!transformedBatch.isEmpty()) {
+                            long loadStartNanos = System.nanoTime();
                             metrics.onJobStatusChanged(job, EtlJobStatus.LOADING);
+                            metrics.onLoadStart(job, transformedCount);
+
                             loadBatch(job, transformedBatch);
+
                             totalLoaded.addAndGet(transformedCount);
+                            long loadDurationMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - loadStartNanos);
+                            metrics.onLoadComplete(job, transformedCount, loadDurationMillis);
+
+                            if (pipelineLog.isDebugEnabled()) {
+                                pipelineLog.debug("Job '{}' batch #{}: loaded {} records in {}ms",
+                                        job.getJobId(), batchNum, transformedCount, loadDurationMillis);
+                            }
                         }
-                        
+
                         cancellationToken.checkCancellation();
-                        
+
                     } catch (CancellationException e) {
                         throw e;
                     } catch (Exception e) {
@@ -182,23 +226,26 @@ public class EtlPipelineFactory {
                         throw e;
                     }
                 });
-                
+
                 cancellationToken.checkCancellation();
-                
-                // Report final metrics
+
+                // Report final extraction duration (wall clock time, not sum of batches)
+                // Передаём 0 для records, чтобы обновить только duration
                 long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimeNanos);
-                metrics.onExtractComplete(job, totalExtracted.get(), elapsedMillis);
-                metrics.onTransformComplete(job, totalTransformed.get(), elapsedMillis);
-                metrics.onLoadComplete(job, totalLoaded.get(), elapsedMillis);
-                
+                long extractTotalMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - extractStartNanos);
+                metrics.onExtractComplete(job, 0, extractTotalMillis);
+
                 metrics.onJobStatusChanged(job, EtlJobStatus.COMPLETED);
-                
-                pipelineLog.info("Job '{}' completed: extracted={}, transformed={}, loaded={}, time={}ms",
-                        job.getJobId(), totalExtracted.get(), totalTransformed.get(), totalLoaded.get(), elapsedMillis);
-                
+
+                pipelineLog.info("Job '{}' completed successfully: extracted={}, transformed={}, loaded={}, batches={}, total_time={}ms, throughput={} rec/sec",
+                        job.getJobId(), totalExtracted.get(), totalTransformed.get(), totalLoaded.get(),
+                        batchCounter.get(), elapsedMillis, calculateThroughput(totalLoaded.get(), elapsedMillis));
+
             } catch (CancellationException e) {
                 metrics.onJobStatusChanged(job, EtlJobStatus.CANCELLED);
-                pipelineLog.info("Job '{}' execution was cancelled", job.getJobId());
+                long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimeNanos);
+                pipelineLog.warn("Job '{}' was cancelled after {}ms: extracted={}, transformed={}, loaded={}",
+                        job.getJobId(), elapsedMillis, totalExtracted.get(), totalTransformed.get(), totalLoaded.get());
                 throw e;
             } catch (RuntimeException e) {
                 if (cancellationToken.isCancelled()) {
@@ -206,15 +253,26 @@ public class EtlPipelineFactory {
                     throw new CancellationException("Execution was cancelled", e);
                 }
                 metrics.onJobStatusChanged(job, EtlJobStatus.FAILED);
+                long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimeNanos);
+                pipelineLog.error("Job '{}' failed after {}ms: extracted={}, transformed={}, loaded={}, error={}",
+                        job.getJobId(), elapsedMillis, totalExtracted.get(), totalTransformed.get(),
+                        totalLoaded.get(), e.getMessage(), e);
                 throw e;
             }
+        }
+
+        private long calculateThroughput(int records, long milliseconds) {
+            if (milliseconds == 0) {
+                return 0;
+            }
+            return (records * 1000L) / milliseconds;
         }
 
         private Collection<EtlRecord> transformBatch(EtlJob job, Collection<EtlRecord> batch) {
             if (batch.isEmpty()) {
                 return batch;
             }
-            
+
             try {
                 return transformer.transform(batch, job);
             } catch (CancellationException e) {
@@ -223,6 +281,8 @@ public class EtlPipelineFactory {
                 if (cancellationToken.isCancelled()) {
                     throw new CancellationException("Execution was cancelled during transformation", e);
                 }
+                pipelineLog.error("Job '{}' transformation error: {} - {}",
+                        job.getJobId(), e.getClass().getSimpleName(), e.getMessage());
                 metrics.onError(job, e);
                 deadLetterQueue.publish(e);
                 throw e;
@@ -237,6 +297,7 @@ public class EtlPipelineFactory {
                         EtlErrorSeverity.CRITICAL,
                         e
                 );
+                pipelineLog.error("Job '{}' transformation failed: {}", job.getJobId(), e.getMessage(), e);
                 metrics.onError(job, wrapped);
                 deadLetterQueue.publish(wrapped);
                 throw wrapped;
@@ -247,7 +308,7 @@ public class EtlPipelineFactory {
             if (batch.isEmpty()) {
                 return;
             }
-            
+
             try {
                 cancellationToken.checkCancellation();
                 loader.load(batch, job);
@@ -258,6 +319,8 @@ public class EtlPipelineFactory {
                 if (cancellationToken.isCancelled()) {
                     throw new CancellationException("Execution was cancelled during loading", e);
                 }
+                pipelineLog.error("Job '{}' loading error: {} - {}",
+                        job.getJobId(), e.getClass().getSimpleName(), e.getMessage());
                 metrics.onError(job, e);
                 deadLetterQueue.publish(e);
                 throw e;
@@ -272,6 +335,7 @@ public class EtlPipelineFactory {
                         EtlErrorSeverity.CRITICAL,
                         e
                 );
+                pipelineLog.error("Job '{}' loading failed: {}", job.getJobId(), e.getMessage(), e);
                 metrics.onError(job, wrapped);
                 deadLetterQueue.publish(wrapped);
                 throw wrapped;

@@ -29,7 +29,10 @@ import java.util.function.Consumer;
 @RequiredArgsConstructor
 public class JdbcExtractor implements Extractor {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(JdbcExtractor.class);
+
     private final JdbcTemplate jdbcTemplate;
+    private final ru.pospelov.etl.engine.schema.SchemaRegistryService schemaRegistryService;
 
     @Override
     public String getType() {
@@ -53,9 +56,23 @@ public class JdbcExtractor implements Extractor {
         String schemaStr = (String) job.getParam("avroSchema");
         String keyColumn = Objects.toString(job.getParamOrDefault("keyColumn", ""), "");
 
+        log.info("Job '{}' extraction started: batchSize={}, threads={}, partitions={}",
+                job.getJobId(), streamBatchSize, threadCount, partitionCount);
+
         Schema avroSchema = null;
         if (schemaStr != null) {
-            avroSchema = new Schema.Parser().parse(schemaStr);
+            // Проверяем, это subject name или JSON схема
+            if (schemaStr.trim().startsWith("{")) {
+                // Это JSON схема
+                avroSchema = new Schema.Parser().parse(schemaStr);
+            } else {
+                // Это subject name - получаем схему из Schema Registry
+                try {
+                    avroSchema = schemaRegistryService.getLatestSchema(schemaStr);
+                } catch (Exception e) {
+                    throw new ExtractionException("Failed to fetch schema from Schema Registry for subject: " + schemaStr, job.getJobId(), e);
+                }
+            }
         }
 
         final Map<String, String> avroFieldLookup = buildAvroFieldLookup(avroSchema);
@@ -64,6 +81,8 @@ public class JdbcExtractor implements Extractor {
 
         try {
             if (!partitionColumn.isEmpty() && partitionCount > 1) {
+                log.info("Job '{}' using partition-based extraction: column={}, partitions={}",
+                        job.getJobId(), partitionColumn, partitionCount);
                 for (int p = 0; p < partitionCount; p++) {
                     final int part = p;
                     final String partQuery = query +
@@ -84,6 +103,8 @@ public class JdbcExtractor implements Extractor {
             } else {
                 Integer totalRows = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM (" + query + ") t", Integer.class);
                 final int total = (totalRows == null) ? 0 : totalRows;
+                log.info("Job '{}' using offset-based extraction: totalRows={}, tasks={}",
+                        job.getJobId(), total, (total + streamBatchSize - 1) / streamBatchSize);
 
                 for (int offset = 0; offset < total; offset += streamBatchSize) {
                     final int off = offset;
@@ -106,12 +127,16 @@ public class JdbcExtractor implements Extractor {
             if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
                 throw new ExtractionException("JdbcExtractor did not finish within timeout", job.getJobId());
             }
+            log.info("Job '{}' extraction completed: {} tasks finished", job.getJobId(), tasks.size());
         } catch (EtlException e) {
+            log.error("Job '{}' extraction failed: {}", job.getJobId(), e.getMessage());
             throw e;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.error("Job '{}' extraction interrupted", job.getJobId());
             throw new ExtractionException("JdbcExtractor interrupted", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
         } catch (Exception e) {
+            log.error("Job '{}' extraction error: {}", job.getJobId(), e.getMessage(), e);
             throw new ExtractionException("JdbcExtractor failed", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
         } finally {
             executor.shutdownNow();

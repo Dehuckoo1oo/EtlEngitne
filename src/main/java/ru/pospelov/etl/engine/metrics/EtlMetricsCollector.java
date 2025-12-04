@@ -179,20 +179,32 @@ public class EtlMetricsCollector implements EtlMetrics {
         }
 
         private synchronized void updateExtract(long records, long durationMillis, Instant timestamp) {
-            extractedRecords = Math.max(records, 0);
-            extractDurationMillis = Math.max(durationMillis, 0);
+            // Обновляем количество записей инкрементально (для real-time UI)
+            if (records > 0) {
+                extractedRecords += records;
+            }
+            // Обновляем длительность как wall clock time (не суммируем батчи)
+            // Ожидаем: сначала множество вызовов с records > 0, duration = 0
+            // Потом финальный вызов с records = 0, duration = total time
+            if (durationMillis > 0) {
+                extractDurationMillis = durationMillis;  // Заменяем, не складываем
+            }
             lastUpdatedAt = timestamp;
         }
 
         private synchronized void updateTransform(long records, long durationMillis, Instant timestamp) {
-            transformedRecords = Math.max(records, 0);
-            transformDurationMillis = Math.max(durationMillis, 0);
+            // Transform/Load duration - это CPU time (сумма всех батчей)
+            // Это правильно для параллельной обработки
+            transformedRecords += Math.max(records, 0);
+            transformDurationMillis += Math.max(durationMillis, 0);
             lastUpdatedAt = timestamp;
         }
 
         private synchronized void updateLoad(long records, long durationMillis, Instant timestamp) {
-            loadedRecords = Math.max(records, 0);
-            loadDurationMillis = Math.max(durationMillis, 0);
+            // Transform/Load duration - это CPU time (сумма всех батчей)
+            // Это правильно для параллельной обработки
+            loadedRecords += Math.max(records, 0);
+            loadDurationMillis += Math.max(durationMillis, 0);
             lastUpdatedAt = timestamp;
         }
 
