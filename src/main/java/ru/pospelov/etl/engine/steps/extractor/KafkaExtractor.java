@@ -52,6 +52,9 @@ public class KafkaExtractor implements Extractor {
         String format = Objects.toString(job.getParamOrDefault("format", "string"), "string");
         boolean isAvro = format.equalsIgnoreCase("avro");
 
+        log.info("Job '{}' Kafka extraction started: topic={}, startTimestamp={}, endTimestamp={}, threads={}, format={}",
+                job.getJobId(), topic, Instant.ofEpochMilli(startMillis), Instant.ofEpochMilli(endMillis), threadCount, format);
+
         Map<String, Object> consumerProps = consumerFactory.buildConsumerConfig("kafka-extractor", isAvro);
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         List<Future<?>> tasks = new ArrayList<>();
@@ -75,13 +78,16 @@ public class KafkaExtractor implements Extractor {
             if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
                 throw new ExtractionException("Kafka extractor did not finish within timeout", job.getJobId());
             }
+            log.info("Job '{}' Kafka extraction completed: {} partitions processed", job.getJobId(), partitions.size());
         } catch (EtlException e) {
+            log.error("Job '{}' Kafka extraction failed: {}", job.getJobId(), e.getMessage());
             throw e;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.error("Job '{}' Kafka extraction interrupted", job.getJobId());
             throw new ExtractionException("Kafka extraction interrupted", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
         } catch (Exception e) {
-            log.error("Kafka extraction failed", e);
+            log.error("Job '{}' Kafka extraction error: {}", job.getJobId(), e.getMessage(), e);
             throw new ExtractionException("Kafka extraction failed", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
         } finally {
             executor.shutdownNow();

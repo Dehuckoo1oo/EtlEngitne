@@ -52,7 +52,7 @@ ETL (Extract-Transform-Load) движок на базе Spring Boot, позво�
 - **[API документация](doc/API.md)** - REST API для управления джобами
 
 ### Для разработчиков
-- **[Тестирование](TESTING.md)** - Запуск unit, integration и E2E тестов
+- **[Тестирование](doc/TESTING.md)** - Запуск unit, integration и E2E тестов
 - **[Roadmap](doc/ROADMAP.md)** - План развития проекта
 
 ## 🧪 Тесты
@@ -65,7 +65,7 @@ mvn test  # ~8 секунд, 70 тестов
 mvn test -Dtest=KafkaToSqlIntegrationTest  # ~40 секунд
 ```
 
-См. [TESTING.md](TESTING.md) для подробностей.
+См. [TESTING.md](doc/TESTING.md) для подробностей.
 
 ## 🚀 Быстрый запуск
 

@@ -1,6 +1,7 @@
 package ru.pospelov.etl.engine.engine;
 
 
+import lombok.Getter;
 import org.springframework.stereotype.Component;
 import ru.pospelov.etl.engine.steps.extractor.Extractor;
 import ru.pospelov.etl.engine.steps.loader.Loader;
@@ -11,6 +12,7 @@ import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+@Getter
 @Component
 public class EtlComponentRegistry {
 
@@ -38,17 +40,6 @@ public class EtlComponentRegistry {
     public Loader getLoader(String type) {
         return loaderMap.get(type);
     }
-    
-    public Map<String, Extractor> getExtractorMap() {
-        return extractorMap;
-    }
-    
-    public Map<String, Transformer> getTransformerMap() {
-        return transformerMap;
-    }
-    
-    public Map<String, Loader> getLoaderMap() {
-        return loaderMap;
-    }
+
 }
 

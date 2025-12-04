@@ -8,7 +8,7 @@
 3. **[JOB_CREATION_GUIDE.md](JOB_CREATION_GUIDE.md)** - Подробное руководство по созданию ETL Job
 
 ### 🧪 Тестирование
-4. **[TESTING.md](../TESTING.md)** - Запуск и настройка тестов (unit, integration, E2E)
+4. **[TESTING.md](TESTING.md)** - Запуск и настройка тестов (unit, integration, E2E)
 
 ### 🔌 API
 5. **[API.md](API.md)** - REST API для управления джобами

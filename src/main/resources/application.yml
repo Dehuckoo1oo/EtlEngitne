@@ -16,6 +16,8 @@ spring:
   jpa:
     hibernate:
       ddl-auto: validate              # Flyway управляет схемой, Hibernate только валидирует
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
     show-sql: false                   # Отключить вывод SQL в консоль
     properties:
       hibernate:
@@ -38,8 +40,18 @@ kafka:
 logging:
   level:
     root: INFO
+    # ETL Engine - ключевые операции
+    ru.pospelov.etl.engine.engine: INFO
+    ru.pospelov.etl.engine.steps: INFO
+    ru.pospelov.etl.engine.metrics: INFO
+    # Kafka - минимальное логирование
     org.apache.kafka: WARN
     org.apache.kafka.clients.consumer: WARN
     org.apache.kafka.common.utils.AppInfoParser: ERROR
     io.confluent.kafka.serializers: WARN
     io.confluent.kafka.serializers.KafkaAvroDeserializerConfig: WARN
+    # Spring/Hibernate - минимальное
+    org.springframework: WARN
+    org.hibernate: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
