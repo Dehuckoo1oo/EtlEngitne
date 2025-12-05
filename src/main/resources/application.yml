@@ -32,6 +32,7 @@ spring:
     schemas: service
     baseline-version: 0
     validate-on-migrate: true
+    create-schemas: true
   main:
     banner-mode: off
 kafka:

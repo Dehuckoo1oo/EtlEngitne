@@ -15,6 +15,8 @@ services:
       - MSSQL_SA_PASSWORD=verYs3cret
     ports:
       - 1433:1433
+    networks:
+      - kafka
 
 
   controller-i1:
@@ -302,3 +304,32 @@ services:
     tty: true
     networks:
       - kafka
+
+  etl-engine:
+    image: etl-engine:latest
+    container_name: etl-engine
+    ports:
+      - "8099:8080"
+    networks:
+      - kafka
+    environment:
+      # Database connection
+      - SPRING_DATASOURCE_URL=jdbc:sqlserver://sqlserver:1433;databaseName=SUPPORT;encrypt=true;trustServerCertificate=true;
+      - SPRING_DATASOURCE_USERNAME=sa
+      - SPRING_DATASOURCE_PASSWORD=verYs3cret
+      # Kafka connection
+      - KAFKA_BOOTSTRAP_SERVERS=broker-i1:19092,broker-i2:19092,broker-i3:19092
+      - KAFKA_SCHEMA_REGISTRY_URL=http://schema-registry:8081
+    restart: unless-stopped
+    depends_on:
+      - sqlserver
+      - broker-i1
+      - broker-i2
+      - broker-i3
+      - schema-registry
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 60s
