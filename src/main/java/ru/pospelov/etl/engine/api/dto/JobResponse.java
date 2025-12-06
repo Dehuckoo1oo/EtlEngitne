@@ -25,10 +25,10 @@ public class JobResponse {
     private String id;
 
     /**
-     * SQL-запрос для извлечения данных
+     * Источник данных (SQL-запрос или Kafka топик)
      */
-    @JsonProperty("sourceQuery")
-    private String sourceQuery;
+    @JsonProperty("source")
+    private String source;
 
     /**
      * Целевая таблица для загрузки данных

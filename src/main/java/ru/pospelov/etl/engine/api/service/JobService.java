@@ -7,18 +7,24 @@ import ru.pospelov.etl.engine.api.dto.JobResponse;
 import ru.pospelov.etl.engine.api.dto.JobRunRequest;
 import ru.pospelov.etl.engine.api.dto.JobRunResponse;
 import ru.pospelov.etl.engine.api.exception.JobAlreadyExistsException;
+import ru.pospelov.etl.engine.api.exception.JobAlreadyRunningException;
 import ru.pospelov.etl.engine.api.exception.JobExecutionException;
 import ru.pospelov.etl.engine.api.exception.JobNotFoundException;
 import ru.pospelov.etl.engine.api.repository.JobRepository;
 import ru.pospelov.etl.engine.engine.EtlPipeline;
 import ru.pospelov.etl.engine.engine.EtlPipelineFactory;
+import ru.pospelov.etl.engine.metrics.EtlJobStatus;
+import ru.pospelov.etl.engine.metrics.EtlMetricsCollector;
 import ru.pospelov.etl.engine.model.EtlJob;
+
+import org.springframework.beans.factory.annotation.Qualifier;
 
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.stream.Collectors;
 
 /**
@@ -31,10 +37,18 @@ public class JobService {
 
     private final JobRepository jobRepository;
     private final EtlPipelineFactory pipelineFactory;
+    private final ExecutorService etlJobExecutor;
+    private final EtlMetricsCollector metricsCollector;
 
-    public JobService(JobRepository jobRepository, EtlPipelineFactory pipelineFactory) {
+    public JobService(
+            JobRepository jobRepository,
+            EtlPipelineFactory pipelineFactory,
+            @Qualifier("etlJobExecutor") ExecutorService etlJobExecutor,
+            EtlMetricsCollector metricsCollector) {
         this.jobRepository = jobRepository;
         this.pipelineFactory = pipelineFactory;
+        this.etlJobExecutor = etlJobExecutor;
+        this.metricsCollector = metricsCollector;
     }
 
     /**
@@ -116,15 +130,19 @@ public class JobService {
         EtlJob job = jobRepository.findById(jobId)
                 .orElseThrow(() -> new JobNotFoundException(jobId));
 
+        // Проверяем, не выполняется ли уже этот job
+        checkJobNotRunning(jobId);
+
         // Merge runtime parameters with job parameters
         EtlJob jobWithRuntimeParams = mergeParameters(job, runRequest);
 
         long startTime = Instant.now().toEpochMilli();
 
-        // Run job asynchronously to avoid blocking the API response
+        // Run job asynchronously using dedicated executor (NOT ForkJoinPool.commonPool!)
         CompletableFuture.runAsync(() -> {
             try {
                 log.info("Starting execution of job: {}", jobId);
+                logJobConfiguration(jobWithRuntimeParams);
                 EtlPipeline pipeline = pipelineFactory.create(jobWithRuntimeParams);
                 pipeline.run(jobWithRuntimeParams);
                 log.info("Job {} completed successfully", jobId);
@@ -132,7 +150,7 @@ public class JobService {
                 log.error("Job {} failed with error: {}", jobId, e.getMessage(), e);
                 throw new JobExecutionException(jobId, e);
             }
-        });
+        }, etlJobExecutor);
 
         return JobRunResponse.builder()
                 .jobId(jobId)
@@ -140,6 +158,30 @@ public class JobService {
                 .message("Job execution started successfully")
                 .startedAt(startTime)
                 .build();
+    }
+
+    /**
+     * Проверяет, не выполняется ли уже job.
+     * Выбрасывает JobAlreadyRunningException если job уже в процессе выполнения.
+     */
+    private void checkJobNotRunning(String jobId) {
+        metricsCollector.getStatus(jobId).ifPresent(status -> {
+            // Проверяем, является ли статус "выполняющимся"
+            if (isRunningStatus(status)) {
+                log.warn("Attempt to run job '{}' that is already running with status: {}", jobId, status);
+                throw new JobAlreadyRunningException(jobId, status);
+            }
+        });
+    }
+
+    /**
+     * Проверяет, является ли статус "выполняющимся"
+     */
+    private boolean isRunningStatus(EtlJobStatus status) {
+        return status == EtlJobStatus.RUNNING ||
+               status == EtlJobStatus.EXTRACTING ||
+               status == EtlJobStatus.TRANSFORMING ||
+               status == EtlJobStatus.LOADING;
     }
 
     /**
@@ -155,10 +197,54 @@ public class JobService {
 
         return new EtlJob(
                 job.getJobId(),
-                job.getSourceQuery(),
+                job.getSource(),
                 job.getTargetTable(),
                 mergedParams
         );
+    }
+
+    /**
+     * Логирует полную конфигурацию job'а перед запуском
+     */
+    private void logJobConfiguration(EtlJob job) {
+        log.info("========================================");
+        log.info("Job Configuration for: {}", job.getJobId());
+        log.info("========================================");
+        log.info("Source: {}", job.getSource());
+        log.info("Target: {}", job.getTargetTable());
+        log.info("Parameters:");
+
+        Map<String, Object> params = job.getParameters();
+
+        // Основные типы компонентов
+        log.info("  extractorType: {}", params.get("extractorType"));
+        log.info("  transformerType: {}", params.get("transformerType"));
+        log.info("  loaderType: {}", params.get("loaderType"));
+
+        // Параметры производительности
+        log.info("  threads: {}", params.get("threads"));
+        log.info("  streamBatchSize: {}", params.get("streamBatchSize"));
+
+        // Параметры партиционирования
+        log.info("  partitionColumn: {}", params.get("partitionColumn"));
+        log.info("  partitions: {}", params.get("partitions"));
+
+        // Kafka-специфичные параметры
+        log.info("  topic: {}", params.get("topic"));
+        log.info("  format: {}", params.get("format"));
+        log.info("  avroSchema: {}", params.get("avroSchema"));
+        log.info("  keyColumn: {}", params.get("keyColumn"));
+        log.info("  startTimestamp: {}", params.get("startTimestamp"));
+        log.info("  endTimestamp: {}", params.get("endTimestamp"));
+
+        // Все остальные параметры
+        log.info("All parameters:");
+        params.forEach((key, value) -> {
+            if (value != null) {
+                log.info("  {} = {} ({})", key, value, value.getClass().getSimpleName());
+            }
+        });
+        log.info("========================================");
     }
 
     /**
@@ -197,7 +283,7 @@ public class JobService {
     private EtlJob toEtlJob(JobRequest request) {
         return new EtlJob(
                 request.getId(),
-                request.getSourceQuery(),
+                request.getSource(),
                 request.getTarget(),
                 request.getParams()
         );
@@ -209,7 +295,7 @@ public class JobService {
     private JobResponse toJobResponse(EtlJob job) {
         return JobResponse.builder()
                 .id(job.getJobId())
-                .sourceQuery(job.getSourceQuery())
+                .source(job.getSource())
                 .target(job.getTargetTable())
                 .params(job.getParameters())
                 .build();

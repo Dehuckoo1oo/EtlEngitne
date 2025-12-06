@@ -7,7 +7,6 @@ import ru.pospelov.etl.engine.exception.EtlException;
 import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
@@ -16,6 +15,8 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -82,8 +83,9 @@ public class EtlMetricsCollector implements EtlMetrics {
     @Override
     public void onExtractComplete(EtlJob job, int extractedRecords, long durationMillis) {
         MutableJobMetrics metrics = getOrCreate(job);
-        Instant now = Instant.now();
-        metrics.updateExtract(extractedRecords, durationMillis, now);
+        // ОПТИМИЗАЦИЯ: Используем System.currentTimeMillis() вместо Instant.now()
+        // для снижения overhead при частых вызовах
+        metrics.updateExtract(extractedRecords, durationMillis);
         publish(listener -> listener.onExtractComplete(job, extractedRecords, durationMillis));
     }
 
@@ -95,8 +97,7 @@ public class EtlMetricsCollector implements EtlMetrics {
     @Override
     public void onTransformComplete(EtlJob job, int outputRecords, long durationMillis) {
         MutableJobMetrics metrics = getOrCreate(job);
-        Instant now = Instant.now();
-        metrics.updateTransform(outputRecords, durationMillis, now);
+        metrics.updateTransform(outputRecords, durationMillis);
         publish(listener -> listener.onTransformComplete(job, outputRecords, durationMillis));
     }
 
@@ -108,24 +109,21 @@ public class EtlMetricsCollector implements EtlMetrics {
     @Override
     public void onLoadComplete(EtlJob job, int loadedRecords, long durationMillis) {
         MutableJobMetrics metrics = getOrCreate(job);
-        Instant now = Instant.now();
-        metrics.updateLoad(loadedRecords, durationMillis, now);
+        metrics.updateLoad(loadedRecords, durationMillis);
         publish(listener -> listener.onLoadComplete(job, loadedRecords, durationMillis));
     }
 
     @Override
     public void onRecordProcessed(EtlJob job, EtlRecord record) {
         MutableJobMetrics metrics = getOrCreate(job);
-        Instant now = Instant.now();
-        metrics.incrementProcessed(now);
+        metrics.incrementProcessed();
         publish(listener -> listener.onRecordProcessed(job, record));
     }
 
     @Override
     public void onError(EtlJob job, EtlException exception) {
         MutableJobMetrics metrics = getOrCreate(job);
-        Instant now = Instant.now();
-        metrics.incrementErrors(now);
+        metrics.incrementErrors();
         publish(listener -> listener.onError(job, exception));
     }
 
@@ -154,107 +152,154 @@ public class EtlMetricsCollector implements EtlMetrics {
 
     private static final class MutableJobMetrics {
         private final String jobId;
-        private EtlJobStatus status = EtlJobStatus.PENDING;
-        private Instant startedAt;
-        private Instant lastUpdatedAt;
-        private long extractedRecords;
-        private long processedRecords;
-        private long transformedRecords;
-        private long loadedRecords;
-        private long errorCount;
-        private long extractDurationMillis;
-        private long transformDurationMillis;
-        private long loadDurationMillis;
+        private final AtomicReference<EtlJobStatus> status = new AtomicReference<>(EtlJobStatus.PENDING);
+        // ОПТИМИЗАЦИЯ: Храним timestamp как long вместо Instant для снижения overhead
+        private final AtomicLong startedAtMillis = new AtomicLong(0);
+        private final AtomicLong lastUpdatedAtMillis = new AtomicLong(0);
+        private final AtomicLong completedAtMillis = new AtomicLong(0);  // Время завершения для расчета wall-clock time
+        private final AtomicLong extractedRecords = new AtomicLong(0);
+        private final AtomicLong processedRecords = new AtomicLong(0);
+        private final AtomicLong transformedRecords = new AtomicLong(0);
+        private final AtomicLong loadedRecords = new AtomicLong(0);
+        private final AtomicLong errorCount = new AtomicLong(0);
+        private final AtomicLong extractDurationMillis = new AtomicLong(0);
+        private final AtomicLong transformDurationMillis = new AtomicLong(0);
+        private final AtomicLong loadDurationMillis = new AtomicLong(0);
 
         private MutableJobMetrics(String jobId) {
             this.jobId = jobId;
         }
 
-        private synchronized void updateStatus(EtlJobStatus newStatus, Instant timestamp) {
-            status = newStatus;
-            if (startedAt == null && newStatus != EtlJobStatus.PENDING) {
-                startedAt = timestamp;
+        private void updateStatus(EtlJobStatus newStatus, Instant timestamp) {
+            status.set(newStatus);
+            long nowMillis = timestamp.toEpochMilli();
+            if (newStatus != EtlJobStatus.PENDING) {
+                startedAtMillis.compareAndSet(0, nowMillis);
             }
-            lastUpdatedAt = timestamp;
+            // Отслеживаем время завершения для расчета wall-clock time
+            if (newStatus == EtlJobStatus.COMPLETED || newStatus == EtlJobStatus.FAILED || newStatus == EtlJobStatus.CANCELLED) {
+                completedAtMillis.set(nowMillis);
+            }
+            lastUpdatedAtMillis.set(nowMillis);
         }
 
-        private synchronized void updateExtract(long records, long durationMillis, Instant timestamp) {
-            // Обновляем количество записей инкрементально (для real-time UI)
+        private void updateExtract(long records, long durationMillis) {
+            // ОПТИМИЗАЦИЯ: Теперь принимаем абсолютные значения, не инкрементальные
+            // Это позволяет вызывать метод реже (каждые N батчей)
             if (records > 0) {
-                extractedRecords += records;
+                extractedRecords.set(records);  // Устанавливаем абсолютное значение
             }
-            // Обновляем длительность как wall clock time (не суммируем батчи)
-            // Ожидаем: сначала множество вызовов с records > 0, duration = 0
-            // Потом финальный вызов с records = 0, duration = total time
             if (durationMillis > 0) {
-                extractDurationMillis = durationMillis;  // Заменяем, не складываем
+                extractDurationMillis.set(durationMillis);
             }
-            lastUpdatedAt = timestamp;
+            // Используем более легковесный способ обновления timestamp
+            lastUpdatedAtMillis.set(System.currentTimeMillis());
         }
 
-        private synchronized void updateTransform(long records, long durationMillis, Instant timestamp) {
-            // Transform/Load duration - это CPU time (сумма всех батчей)
-            // Это правильно для параллельной обработки
-            transformedRecords += Math.max(records, 0);
-            transformDurationMillis += Math.max(durationMillis, 0);
-            lastUpdatedAt = timestamp;
+        private void updateTransform(long records, long durationMillis) {
+            if (records > 0) {
+                transformedRecords.set(records);  // Абсолютное значение
+            }
+            if (durationMillis > 0) {
+                transformDurationMillis.set(durationMillis);  // Уже накопленное значение
+            }
+            lastUpdatedAtMillis.set(System.currentTimeMillis());
         }
 
-        private synchronized void updateLoad(long records, long durationMillis, Instant timestamp) {
-            // Transform/Load duration - это CPU time (сумма всех батчей)
-            // Это правильно для параллельной обработки
-            loadedRecords += Math.max(records, 0);
-            loadDurationMillis += Math.max(durationMillis, 0);
-            lastUpdatedAt = timestamp;
+        private void updateLoad(long records, long durationMillis) {
+            if (records > 0) {
+                loadedRecords.set(records);  // Абсолютное значение
+            }
+            if (durationMillis > 0) {
+                loadDurationMillis.set(durationMillis);  // Уже накопленное значение
+            }
+            lastUpdatedAtMillis.set(System.currentTimeMillis());
         }
 
-        private synchronized void incrementProcessed(Instant timestamp) {
-            processedRecords++;
-            lastUpdatedAt = timestamp;
+        private void incrementProcessed() {
+            processedRecords.incrementAndGet();
+            lastUpdatedAtMillis.set(System.currentTimeMillis());
         }
 
-        private synchronized void incrementErrors(Instant timestamp) {
-            errorCount++;
-            lastUpdatedAt = timestamp;
+        private void incrementErrors() {
+            errorCount.incrementAndGet();
+            lastUpdatedAtMillis.set(System.currentTimeMillis());
         }
 
-        private synchronized EtlJobMetricsSnapshot toSnapshot() {
-            Instant effectiveLastUpdated = lastUpdatedAt != null ? lastUpdatedAt : startedAt;
-            double throughput = computeThroughput(effectiveLastUpdated);
+        private EtlJobMetricsSnapshot toSnapshot() {
+            long startedMillis = startedAtMillis.get();
+            long updatedMillis = lastUpdatedAtMillis.get();
+            long completedMillis = completedAtMillis.get();
+
+            Instant started = startedMillis > 0 ? Instant.ofEpochMilli(startedMillis) : null;
+            Instant updated = updatedMillis > 0 ? Instant.ofEpochMilli(updatedMillis) : null;
+            Instant effectiveLastUpdated = updated != null ? updated : started;
+
+            // Вычисляем wall-clock time и throughput
+            long totalDuration = computeTotalDuration(startedMillis, completedMillis, updatedMillis);
+            double throughput = computeThroughput(totalDuration);
+
             return new EtlJobMetricsSnapshot(
                     jobId,
-                    status,
-                    startedAt,
+                    status.get(),
+                    started,
                     effectiveLastUpdated,
-                    extractedRecords,
-                    processedRecords,
-                    transformedRecords,
-                    loadedRecords,
-                    errorCount,
-                    extractDurationMillis,
-                    transformDurationMillis,
-                    loadDurationMillis,
+                    extractedRecords.get(),
+                    processedRecords.get(),
+                    transformedRecords.get(),
+                    loadedRecords.get(),
+                    errorCount.get(),
+                    extractDurationMillis.get(),
+                    transformDurationMillis.get(),
+                    loadDurationMillis.get(),
+                    totalDuration,
                     throughput
             );
         }
 
-        private synchronized EtlJobStatus status() {
-            return status;
+        private EtlJobStatus status() {
+            return status.get();
         }
 
-        private double computeThroughput(Instant updatedAt) {
-            if (startedAt == null || updatedAt == null) {
+        /**
+         * Вычисляет реальное wall-clock время выполнения (от старта до завершения).
+         * Для streaming pipeline это корректный способ расчета времени,
+         * так как фазы extract/transform/load выполняются параллельно.
+         */
+        private long computeTotalDuration(long startedMillis, long completedMillis, long updatedMillis) {
+            if (startedMillis <= 0) {
+                return 0;
+            }
+
+            // Если джоб завершен (COMPLETED/FAILED/CANCELLED), используем время завершения
+            if (completedMillis > 0) {
+                return completedMillis - startedMillis;
+            }
+
+            // Если джоб ещё выполняется, используем текущее время
+            if (updatedMillis > 0) {
+                return updatedMillis - startedMillis;
+            }
+
+            return 0;
+        }
+
+        /**
+         * Вычисляет throughput на основе wall-clock времени.
+         */
+        private double computeThroughput(long totalDurationMillis) {
+            if (totalDurationMillis <= 0) {
                 return 0d;
             }
-            Duration totalDuration = Duration.between(startedAt, updatedAt);
-            if (totalDuration.isZero() || totalDuration.isNegative()) {
+
+            double seconds = totalDurationMillis / 1000d;
+            long loaded = loadedRecords.get();
+
+            if (loaded <= 0) {
                 return 0d;
             }
-            double seconds = totalDuration.toMillis() / 1000d;
-            if (seconds <= 0d) {
-                return 0d;
-            }
-            return loadedRecords / seconds;
+
+            return loaded / seconds;
         }
     }
 }

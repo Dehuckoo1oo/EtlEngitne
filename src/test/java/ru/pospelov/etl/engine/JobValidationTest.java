@@ -118,7 +118,7 @@ class JobValidationTest {
         
         assertThat(result.hasErrors()).isTrue();
         assertThat(result.getErrors()).anyMatch(e -> 
-            e.getField().equals("sourceQuery") && 
+            e.getField().equals("source") &&
             (e.getMessage().contains("required") || e.getMessage().contains("SQL extractor")));
     }
 

@@ -38,25 +38,17 @@ public class FastSqlServerLoader implements Loader {
         if (records.isEmpty()) return;
 
         String targetTable = job.getTargetTable();
-        int batchSize = (int) job.getParamOrDefault("streamBatchSize", 50000);
-
-        List<EtlRecord> allRecords = new ArrayList<>(records);
+        List<EtlRecord> batch = records instanceof List ? (List<EtlRecord>) records : new ArrayList<>(records);
         Instant start = Instant.now();
 
         try {
-            // Process in batches for very large collections
-            for (int from = 0; from < allRecords.size(); from += batchSize) {
-                int to = Math.min(from + batchSize, allRecords.size());
-                List<EtlRecord> batch = allRecords.subList(from, to);
-
-                bulkInsertBatch(targetTable, batch, job.getJobId());
-                log.debug("Inserted {} rows (batch {}/{})", batch.size(), to, allRecords.size());
-            }
+            bulkInsertBatch(targetTable, batch, job.getJobId());
+            log.debug("Inserted {} rows into '{}'", batch.size(), targetTable);
         } catch (Exception e) {
             throw new LoadingException(
                     "Bulk insert failed",
                     job.getJobId(),
-                    allRecords.isEmpty() ? null : allRecords.get(0),
+                    batch.isEmpty() ? null : batch.get(0),
                     EtlErrorSeverity.CRITICAL,
                     e
             );
@@ -66,7 +58,7 @@ public class FastSqlServerLoader implements Loader {
         log.info("✅ Fast bulk insert into '{}' completed in {} ms ({} rows)",
                 targetTable,
                 Duration.between(start, end).toMillis(),
-                allRecords.size());
+                batch.size());
     }
 
     private void bulkInsertBatch(String targetTable, List<EtlRecord> batch, String jobId) {
@@ -76,7 +68,11 @@ public class FastSqlServerLoader implements Loader {
                 bulkCopy.setDestinationTableName(targetTable);
 
                 SQLServerBulkCopyOptions options = new SQLServerBulkCopyOptions();
-                options.setTableLock(true);
+                options.setBatchSize(batch.size());  // Use incoming batch size for optimal network throughput
+                // TableLock=false позволяет параллельную запись из нескольких потоков
+                // SQL Server будет использовать page/row locks вместо table lock
+                // КРИТИЧНО для производительности при многопоточной записи!
+                options.setTableLock(false);
                 options.setCheckConstraints(false);
                 options.setFireTriggers(false);
                 options.setKeepNulls(true);

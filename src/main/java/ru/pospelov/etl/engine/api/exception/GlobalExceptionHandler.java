@@ -26,6 +26,11 @@ public class GlobalExceptionHandler {
         return buildErrorResponse(HttpStatus.CONFLICT, ex.getMessage());
     }
 
+    @ExceptionHandler(JobAlreadyRunningException.class)
+    public ResponseEntity<Map<String, Object>> handleJobAlreadyRunningException(JobAlreadyRunningException ex) {
+        return buildErrorResponse(HttpStatus.CONFLICT, ex.getMessage());
+    }
+
     @ExceptionHandler(JobExecutionException.class)
     public ResponseEntity<Map<String, Object>> handleJobExecutionException(JobExecutionException ex) {
         return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage());

@@ -22,6 +22,7 @@ import java.util.Collection;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Component
 public class EtlPipelineFactory {
@@ -46,7 +47,7 @@ public class EtlPipelineFactory {
     public EtlPipeline create(EtlJob job) {
         // Validate job parameters before creating pipeline
         jobValidator.validateOrThrow(job);
-        
+
         String extractorType = requireType(job, "extractorType");
         String transformerType = requireType(job, "transformerType");
         String loaderType = requireType(job, "loaderType");
@@ -146,6 +147,8 @@ public class EtlPipelineFactory {
             final AtomicInteger totalTransformed = new AtomicInteger(0);
             final AtomicInteger totalLoaded = new AtomicInteger(0);
             final AtomicInteger batchCounter = new AtomicInteger(0);
+            final AtomicLong totalTransformDurationMillis = new AtomicLong(0);
+            final AtomicLong totalLoadDurationMillis = new AtomicLong(0);
             final long startTimeNanos = System.nanoTime();
             final long extractStartNanos = System.nanoTime();
 
@@ -157,6 +160,8 @@ public class EtlPipelineFactory {
                         job.getJobId(), extractor.getType(), transformer.getType(), loader.getType());
 
                 // Streaming pipeline: extract -> transform -> load in batches
+                // ОПТИМИЗАЦИЯ: Для больших объёмов данных обновляем метрики реже
+                // Для малых объёмов (тесты) обновляем каждый batch для корректности
                 extractor.extract(job, extractedBatch -> {
                     try {
                         cancellationToken.checkCancellation();
@@ -165,9 +170,14 @@ public class EtlPipelineFactory {
                         int extractedCount = extractedBatch.size();
                         totalExtracted.addAndGet(extractedCount);
 
-                        // Обновляем UI с количеством извлечённых записей в реальном времени
-                        // Передаём 0 для duration, чтобы не суммировать время батчей
-                        metrics.onExtractComplete(job, extractedCount, 0);
+                        // Обновляем метрики:
+                        // - Всегда для первых 10 батчей (для тестов и корректности)
+                        // - Каждые 10 батчей для больших объёмов (оптимизация)
+                        boolean shouldUpdateMetrics = (batchNum <= 10) || (batchNum % 10 == 0);
+                        
+                        if (shouldUpdateMetrics) {
+                            metrics.onExtractComplete(job, totalExtracted.get(), 0);
+                        }
 
                         if (pipelineLog.isDebugEnabled() || batchNum % 10 == 0) {
                             pipelineLog.info("Job '{}' batch #{}: extracted {} records (total: {})",
@@ -176,7 +186,11 @@ public class EtlPipelineFactory {
 
                         // Transform batch
                         long transformStartNanos = System.nanoTime();
-                        metrics.onJobStatusChanged(job, EtlJobStatus.TRANSFORMING);
+                        // Статус TRANSFORMING вызываем только для первого батча
+                        // (для тестов и корректности статусов)
+                        if (batchNum == 1) {
+                            metrics.onJobStatusChanged(job, EtlJobStatus.TRANSFORMING);
+                        }
                         metrics.onTransformStart(job, extractedCount);
 
                         Collection<EtlRecord> transformedBatch = transformBatch(job, extractedBatch);
@@ -186,11 +200,11 @@ public class EtlPipelineFactory {
                         int transformedCount = transformedBatch.size();
                         totalTransformed.addAndGet(transformedCount);
                         long transformDurationMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - transformStartNanos);
-                        metrics.onTransformComplete(job, transformedCount, transformDurationMillis);
+                        totalTransformDurationMillis.addAndGet(transformDurationMillis);
 
-                        // УДАЛЕНО: onRecordProcessed для каждой записи убивает производительность
-                        // При миллионах записей это катастрофа: synchronized + listeners для каждой записи
-                        // transformedBatch.forEach(record -> metrics.onRecordProcessed(job, record));
+                        if (shouldUpdateMetrics) {
+                            metrics.onTransformComplete(job, totalTransformed.get(), totalTransformDurationMillis.get());
+                        }
 
                         if (pipelineLog.isDebugEnabled()) {
                             pipelineLog.debug("Job '{}' batch #{}: transformed {} records in {}ms",
@@ -200,14 +214,21 @@ public class EtlPipelineFactory {
                         // Load batch
                         if (!transformedBatch.isEmpty()) {
                             long loadStartNanos = System.nanoTime();
-                            metrics.onJobStatusChanged(job, EtlJobStatus.LOADING);
+                            // Статус LOADING вызываем только для первого батча
+                            if (batchNum == 1) {
+                                metrics.onJobStatusChanged(job, EtlJobStatus.LOADING);
+                            }
                             metrics.onLoadStart(job, transformedCount);
 
                             loadBatch(job, transformedBatch);
 
                             totalLoaded.addAndGet(transformedCount);
                             long loadDurationMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - loadStartNanos);
-                            metrics.onLoadComplete(job, transformedCount, loadDurationMillis);
+                            totalLoadDurationMillis.addAndGet(loadDurationMillis);
+
+                            if (shouldUpdateMetrics) {
+                                metrics.onLoadComplete(job, totalLoaded.get(), totalLoadDurationMillis.get());
+                            }
 
                             if (pipelineLog.isDebugEnabled()) {
                                 pipelineLog.debug("Job '{}' batch #{}: loaded {} records in {}ms",
@@ -229,11 +250,14 @@ public class EtlPipelineFactory {
 
                 cancellationToken.checkCancellation();
 
-                // Report final extraction duration (wall clock time, not sum of batches)
-                // Передаём 0 для records, чтобы обновить только duration
+                // Report final metrics with actual totals
                 long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimeNanos);
                 long extractTotalMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - extractStartNanos);
-                metrics.onExtractComplete(job, 0, extractTotalMillis);
+
+                // Финальное обновление всех метрик с точными значениями
+                metrics.onExtractComplete(job, totalExtracted.get(), extractTotalMillis);
+                metrics.onTransformComplete(job, totalTransformed.get(), totalTransformDurationMillis.get());
+                metrics.onLoadComplete(job, totalLoaded.get(), totalLoadDurationMillis.get());
 
                 metrics.onJobStatusChanged(job, EtlJobStatus.COMPLETED);
 

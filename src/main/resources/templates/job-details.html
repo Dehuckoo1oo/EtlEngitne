@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      xmlns:layout="http://www.ultraq.net.nz/thymeleaf/layout"
+      layout:decorate="~{layout}">
+<head>
+    <title th:text="${pageTitle}">Job Details | ETL Engine</title>
+</head>
+<body>
+
+<!-- Main Content -->
+<div layout:fragment="content">
+
+    <!-- Toolbar -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="d-flex align-items-center gap-3">
+            <a href="/" class="btn btn-outline-secondary">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-left me-1" viewBox="0 0 16 16">
+                    <path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8"/>
+                </svg>
+                Back to List
+            </a>
+            <h2 class="mb-0" th:text="'Job: ' + ${job.id}">Job: job-001</h2>
+            <span id="statusBadge" class="badge"
+                  th:classappend="${status != null and status.name() == 'COMPLETED' ? 'badge-success' :
+                                   status != null and status.name() == 'FAILED' ? 'badge-error' :
+                                   status != null and (status.name() == 'RUNNING' or status.name() == 'EXTRACTING' or status.name() == 'TRANSFORMING' or status.name() == 'LOADING') ? 'badge-contrast' :
+                                   'badge-primary'}"
+                  th:text="${status != null ? status.name() : 'NOT_RUNNING'}">
+                NOT_RUNNING
+            </span>
+        </div>
+        <button class="btn btn-success" onclick="JobDetails.runJob()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-play-fill me-1" viewBox="0 0 16 16">
+                <path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393"/>
+            </svg>
+            Run Job
+        </button>
+    </div>
+
+    <!-- Progress Bar -->
+    <div id="progressBarContainer" class="mb-4" style="display: none;">
+        <div class="progress">
+            <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+                 role="progressbar" style="width: 0%">
+            </div>
+        </div>
+    </div>
+
+    <!-- Job Information -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">Job Information</h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <p><strong>Job ID:</strong> <span th:text="${job.id}">job-001</span></p>
+                    <p><strong>Source:</strong></p>
+                    <pre class="bg-light p-2 rounded" th:text="${job.source != null ? job.source : 'N/A'}">SELECT * FROM table</pre>
+                    <p><strong>Target:</strong> <span th:text="${job.target != null ? job.target : 'N/A'}">target_table</span></p>
+                </div>
+                <div class="col-md-6">
+                    <p><strong>Extractor:</strong> <span th:text="${job.params['extractorType']}">sql</span></p>
+                    <p><strong>Transformer:</strong> <span th:text="${job.params['transformerType']}">noop</span></p>
+                    <p><strong>Loader:</strong> <span th:text="${job.params['loaderType']}">sql</span></p>
+                    <p><strong>Threads:</strong> <span th:text="${job.params['threads']}">4</span></p>
+                    <p><strong>Batch Size:</strong> <span th:text="${job.params['streamBatchSize']}">50000</span></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Metrics Cards -->
+    <h5 class="mb-3">Metrics</h5>
+    <div id="metricsSection">
+        <!-- Если метрик нет -->
+        <div id="noMetricsMessage" th:if="${metrics == null}" class="alert alert-info">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-info-circle me-2" viewBox="0 0 16 16">
+                <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/>
+                <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533z"/>
+                <path d="M9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/>
+            </svg>
+            No metrics available. Job has not been run yet.
+        </div>
+
+        <!-- Карточки метрик -->
+        <div id="metricsCards" class="row g-3 mb-4" th:if="${metrics != null}">
+            <div class="col-md-2">
+                <div class="card card-metric text-center">
+                    <div class="card-body">
+                        <div class="metric-label">Extracted</div>
+                        <div id="extractedRecords" class="metric-value badge badge-primary"
+                             th:text="${metrics != null ? metrics.extractedRecords() : 0}">0</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card card-metric text-center">
+                    <div class="card-body">
+                        <div class="metric-label">Processed</div>
+                        <div id="processedRecords" class="metric-value badge badge-contrast"
+                             th:text="${metrics != null ? metrics.processedRecords() : 0}">0</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card card-metric text-center">
+                    <div class="card-body">
+                        <div class="metric-label">Transformed</div>
+                        <div id="transformedRecords" class="metric-value badge badge-success"
+                             th:text="${metrics != null ? metrics.transformedRecords() : 0}">0</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card card-metric text-center">
+                    <div class="card-body">
+                        <div class="metric-label">Loaded</div>
+                        <div id="loadedRecords" class="metric-value badge badge-success"
+                             th:text="${metrics != null ? metrics.loadedRecords() : 0}">0</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="card card-metric text-center">
+                    <div class="card-body">
+                        <div class="metric-label">Errors</div>
+                        <div id="errorCount" class="metric-value badge badge-error"
+                             th:text="${metrics != null ? metrics.errorCount() : 0}">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Performance Metrics -->
+    <div id="performanceSection" th:if="${metrics != null}">
+        <h5 class="mb-3">Performance</h5>
+        <div class="card mb-4">
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <p><strong>Throughput:</strong>
+                            <span id="throughput" th:text="${metrics != null ? #numbers.formatDecimal(metrics.throughput(), 1, 2) + ' records/sec' : 'N/A'}">0.00 records/sec</span>
+                        </p>
+                        <p><strong>Total Duration:</strong>
+                            <span id="totalDuration" th:text="${metrics != null ? #numbers.formatDecimal(metrics.totalDurationMillis() / 1000.0, 1, 2) + ' sec' : 'N/A'}">0.00 sec</span>
+                        </p>
+                    </div>
+                    <div class="col-md-6">
+                        <p><strong>Extract Duration:</strong>
+                            <span id="extractDuration"
+                                  th:text="${metrics != null ? #numbers.formatDecimal(metrics.extractDurationMillis() / 1000.0, 1, 2) + ' sec' : 'N/A'}">0.00 sec</span>
+                        </p>
+                        <p><strong>Transform Duration:</strong>
+                            <span id="transformDuration"
+                                  th:text="${metrics != null ? #numbers.formatDecimal(metrics.transformDurationMillis() / 1000.0, 1, 2) + ' sec' : 'N/A'}">0.00 sec</span>
+                        </p>
+                        <p><strong>Load Duration:</strong>
+                            <span id="loadDuration"
+                                  th:text="${metrics != null ? #numbers.formatDecimal(metrics.loadDurationMillis() / 1000.0, 1, 2) + ' sec' : 'N/A'}">0.00 sec</span>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- WebSocket Connection Status (для отладки) -->
+    <div id="wsStatus" class="alert alert-secondary" style="display: none;">
+        <small>WebSocket: <span id="wsStatusText">Connecting...</span></small>
+    </div>
+
+</div>
+
+<!-- Page-specific scripts -->
+<th:block layout:fragment="scripts">
+    <script th:inline="javascript">
+        // Передаем jobId из Thymeleaf в JavaScript
+        const JOB_ID = /*[[${job.id}]]*/ 'job-001';
+    </script>
+    <script th:src="@{/js/job-details.js(v=${timestamp})}"></script>
+</th:block>
+
+</body>
+</html>

@@ -61,7 +61,7 @@ class JobControllerTest {
                         .content(objectMapper.writeValueAsString(sampleRequest)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.id").value("test-job-1"))
-                .andExpect(jsonPath("$.sourceQuery").value("SELECT * FROM test_table"))
+                .andExpect(jsonPath("$.source").value("SELECT * FROM test_table"))
                 .andExpect(jsonPath("$.params.extractorType").value("sql"));
     }
 
@@ -130,7 +130,7 @@ class JobControllerTest {
     @Test
     void testUpdateJob_Success() throws Exception {
         JobResponse updatedResponse = createSampleJobResponse("test-job-1");
-        updatedResponse.setSourceQuery("SELECT * FROM updated_table");
+        updatedResponse.setSource("SELECT * FROM updated_table");
 
         when(jobService.updateJob(eq("test-job-1"), any(JobRequest.class)))
                 .thenReturn(updatedResponse);
@@ -140,7 +140,7 @@ class JobControllerTest {
                         .content(objectMapper.writeValueAsString(sampleRequest)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value("test-job-1"))
-                .andExpect(jsonPath("$.sourceQuery").value("SELECT * FROM updated_table"));
+                .andExpect(jsonPath("$.source").value("SELECT * FROM updated_table"));
     }
 
     @Test
@@ -190,7 +190,7 @@ class JobControllerTest {
     private JobRequest createSampleJobRequest(String jobId) {
         JobRequest request = new JobRequest();
         request.setId(jobId);
-        request.setSourceQuery("SELECT * FROM test_table");
+        request.setSource("SELECT * FROM test_table");
         request.setTarget(null);
 
         Map<String, Object> params = new HashMap<>();
@@ -215,7 +215,7 @@ class JobControllerTest {
 
         return JobResponse.builder()
                 .id(jobId)
-                .sourceQuery("SELECT * FROM test_table")
+                .source("SELECT * FROM test_table")
                 .target(null)
                 .params(params)
                 .build();

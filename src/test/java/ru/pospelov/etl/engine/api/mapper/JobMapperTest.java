@@ -48,7 +48,7 @@ class JobMapperTest {
         assertNotNull(entity);
         assertEquals("test-job-1", entity.getId());
         assertEquals("test-job-1", entity.getName()); // По умолчанию name = id
-        assertEquals("SELECT * FROM test_table", entity.getSourceQuery());
+        assertEquals("SELECT * FROM test_table", entity.getSource());
         assertEquals("target_table", entity.getTarget());
         assertEquals("ACTIVE", entity.getStatus());
         assertNotNull(entity.getParams());
@@ -87,7 +87,7 @@ class JobMapperTest {
         JobEntity entity = JobEntity.builder()
                 .id("test-job-3")
                 .name("Test Job 3")
-                .sourceQuery("SELECT * FROM orders")
+                .source("SELECT * FROM orders")
                 .target("kafka-topic")
                 .params(paramsJson)
                 .createdAt(LocalDateTime.now())
@@ -103,7 +103,7 @@ class JobMapperTest {
         // Then
         assertNotNull(etlJob);
         assertEquals("test-job-3", etlJob.getJobId());
-        assertEquals("SELECT * FROM orders", etlJob.getSourceQuery());
+        assertEquals("SELECT * FROM orders", etlJob.getSource());
         assertEquals("kafka-topic", etlJob.getTargetTable());
         assertNotNull(etlJob.getParameters());
         assertEquals("sql", etlJob.getParam("extractorType"));
@@ -136,7 +136,7 @@ class JobMapperTest {
         JobEntity existingEntity = JobEntity.builder()
                 .id("test-job-5")
                 .name("Original Name")
-                .sourceQuery("SELECT * FROM old_table")
+                .source("SELECT * FROM old_table")
                 .target("old_target")
                 .params(originalParamsJson)
                 .createdAt(createdAt)
@@ -163,7 +163,7 @@ class JobMapperTest {
         // Then
         assertNotNull(result);
         assertEquals("test-job-5", result.getId());
-        assertEquals("SELECT * FROM new_table", result.getSourceQuery());
+        assertEquals("SELECT * FROM new_table", result.getSource());
         assertEquals("new_target", result.getTarget());
 
         // Метаданные НЕ должны измениться
@@ -201,7 +201,7 @@ class JobMapperTest {
 
         // Then
         assertEquals(originalJob.getJobId(), convertedJob.getJobId());
-        assertEquals(originalJob.getSourceQuery(), convertedJob.getSourceQuery());
+        assertEquals(originalJob.getSource(), convertedJob.getSource());
         assertEquals(originalJob.getTargetTable(), convertedJob.getTargetTable());
         assertEquals(originalJob.getParam("extractorType"), convertedJob.getParam("extractorType"));
         assertEquals(originalJob.getParam("transformerType"), convertedJob.getParam("transformerType"));
@@ -225,7 +225,7 @@ class JobMapperTest {
         // Then
         assertNotNull(entity);
         assertEquals("kafka-job", entity.getId());
-        assertNull(entity.getSourceQuery());
+        assertNull(entity.getSource());
         assertNull(entity.getTarget());
         assertNotNull(entity.getParams());
     }

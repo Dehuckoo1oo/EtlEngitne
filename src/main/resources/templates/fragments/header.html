@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<body>
+
+<!-- Header Fragment -->
+<nav th:fragment="header" class="navbar navbar-expand-lg navbar-light bg-light border-bottom">
+    <div class="container-fluid">
+
+        <!-- Sidebar Toggle Button -->
+        <button class="btn btn-outline-secondary me-3" id="sidebarToggle" type="button">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+
+        <!-- App Title -->
+        <a class="navbar-brand fw-bold" href="/">ETL Engine</a>
+
+        <!-- Right side content (можно добавить позже) -->
+        <div class="ms-auto">
+            <!-- Здесь можно добавить уведомления, профиль пользователя и т.д. -->
+        </div>
+
+    </div>
+</nav>
+
+</body>
+</html>

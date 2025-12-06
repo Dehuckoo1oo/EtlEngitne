@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      xmlns:layout="http://www.ultraq.net.nz/thymeleaf/layout"
+      layout:decorate="~{layout}">
+<head>
+    <title th:text="${pageTitle}">Create/Edit Job | ETL Engine</title>
+</head>
+<body>
+
+<!-- Main Content -->
+<div layout:fragment="content">
+
+    <!-- Toolbar -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="d-flex align-items-center gap-3">
+            <a href="/" class="btn btn-outline-secondary">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-left me-1" viewBox="0 0 16 16">
+                    <path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8"/>
+                </svg>
+                Cancel
+            </a>
+            <h2 class="mb-0" th:text="${isEditMode ? 'Edit Job' : 'Create New Job'}">Create New Job</h2>
+        </div>
+    </div>
+
+    <!-- Form -->
+    <form id="jobForm">
+
+        <!-- Basic Fields -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Basic Information</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <!-- Job ID -->
+                    <div class="col-md-12">
+                        <label for="jobId" class="form-label">Job ID <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="jobId"
+                               th:value="${job != null ? job.id : ''}"
+                               th:readonly="${isEditMode}"
+                               required>
+                        <div class="form-text">Unique identifier for this ETL job</div>
+                    </div>
+
+                    <!-- Extractor Type -->
+                    <div class="col-md-4">
+                        <label for="extractorType" class="form-label">
+                            Extractor Type <span class="text-danger">*</span>
+                        </label>
+                        <select class="form-select" id="extractorType" required>
+                            <option value="">Select extractor...</option>
+                            <option value="sql" th:selected="${job != null and job.params['extractorType'] == 'sql'}">SQL Database</option>
+                            <option value="kafka" th:selected="${job != null and job.params['extractorType'] == 'kafka'}">Kafka Topic</option>
+                        </select>
+                        <div class="form-text">Data source (extractorType)</div>
+                    </div>
+
+                    <!-- Loader Type -->
+                    <div class="col-md-4">
+                        <label for="loaderType" class="form-label">
+                            Loader Type <span class="text-danger">*</span>
+                        </label>
+                        <select class="form-select" id="loaderType" required>
+                            <option value="">Select loader...</option>
+                            <option value="sql" th:selected="${job != null and job.params['loaderType'] == 'sql'}">SQL Database</option>
+                            <option value="fast-sql" th:selected="${job != null and job.params['loaderType'] == 'fast-sql'}">Fast SQL (Bulk Insert)</option>
+                            <option value="kafka" th:selected="${job != null and job.params['loaderType'] == 'kafka'}">Kafka Topic</option>
+                        </select>
+                        <div class="form-text">Data target (loaderType)</div>
+                    </div>
+
+                    <!-- Transformer Type -->
+                    <div class="col-md-4">
+                        <label for="transformerType" class="form-label">
+                            Transformer Type <span class="text-danger">*</span>
+                        </label>
+                        <select class="form-select" id="transformerType" required>
+                            <option value="noop" th:selected="${job == null or job.params['transformerType'] == 'noop'}">No Operation</option>
+                            <option value="avro" th:selected="${job != null and job.params['transformerType'] == 'avro'}">Avro</option>
+                        </select>
+                        <div class="form-text">Data transformation (transformerType)</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Source Configuration -->
+        <div class="card mb-4" id="sourceConfigCard" style="display: none;">
+            <div class="card-header">
+                <h5 class="mb-0">Source Configuration</h5>
+            </div>
+            <div class="card-body">
+
+                <!-- SQL Source Fields -->
+                <div id="sqlSourceFields" style="display: none;">
+                    <div class="row g-3">
+                        <div class="col-md-12">
+                            <label for="source" class="form-label">SQL Query <span class="text-danger">*</span></label>
+                            <textarea class="form-control font-monospace" id="source" rows="5"
+                                      th:text="${job != null ? job.source : ''}"></textarea>
+                            <div class="form-text">SELECT query to extract data from database</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Kafka Source Fields -->
+                <div id="kafkaSourceFields" style="display: none;">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label for="startTimestamp" class="form-label">Start Timestamp <span class="text-danger">*</span></label>
+                            <input type="datetime-local" class="form-control" id="startTimestamp">
+                            <div class="form-text">Start reading from this timestamp</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="endTimestamp" class="form-label">End Timestamp <span class="text-danger">*</span></label>
+                            <input type="datetime-local" class="form-control" id="endTimestamp">
+                            <div class="form-text">Stop reading at this timestamp</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="kafkaSourceFormat" class="form-label">Format</label>
+                            <select class="form-select" id="kafkaSourceFormat">
+                                <option value="avro">Avro</option>
+                                <option value="json">JSON</option>
+                                <option value="string">String</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6" id="kafkaSourceSchemaDiv" style="display: none;">
+                            <label for="kafkaSourceSchema" class="form-label">Avro Schema Subject</label>
+                            <select class="form-select" id="kafkaSourceSchema">
+                                <option value="">No schema</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Target Configuration -->
+        <div class="card mb-4" id="targetConfigCard" style="display: none;">
+            <div class="card-header">
+                <h5 class="mb-0">Target Configuration</h5>
+            </div>
+            <div class="card-body">
+
+                <!-- SQL Target Fields -->
+                <div id="sqlTargetFields" style="display: none;">
+                    <div class="row g-3">
+                        <div class="col-md-12">
+                            <label for="targetTable" class="form-label">Target Table <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="targetTable"
+                                   th:value="${job != null ? job.target : ''}">
+                            <div class="form-text">Table name to insert data (e.g., schema.table)</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Kafka Target Fields -->
+                <div id="kafkaTargetFields" style="display: none;">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label for="kafkaTargetFormat" class="form-label">Format</label>
+                            <select class="form-select" id="kafkaTargetFormat">
+                                <option value="avro">Avro</option>
+                                <option value="json">JSON</option>
+                                <option value="string">String</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6" id="kafkaTargetSchemaDiv" style="display: none;">
+                            <label for="kafkaTargetSchema" class="form-label">Avro Schema Subject</label>
+                            <select class="form-select" id="kafkaTargetSchema">
+                                <option value="">No schema</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Source/Target Configuration -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Source & Target</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <!-- Source field - visible based on extractor type -->
+                    <div class="col-md-6" id="sourceFieldDiv" style="display: none;">
+                        <label for="sourceField" class="form-label">Source <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="sourceField"
+                               th:value="${job != null ? job.source : ''}">
+                        <div class="form-text" id="sourceFieldHint">Kafka topic or SQL query</div>
+                    </div>
+                    <!-- Target field - visible based on loader type -->
+                    <div class="col-md-6" id="targetFieldDiv" style="display: none;">
+                        <label for="targetField" class="form-label">Target <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="targetField"
+                               th:value="${job != null ? job.target : ''}">
+                        <div class="form-text" id="targetFieldHint">Kafka topic or SQL table</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Common Parameters -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Common Parameters</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label for="partitionColumn" class="form-label">Partition Column (Optional)</label>
+                        <input type="text" class="form-control" id="partitionColumn"
+                               th:value="${job != null ? job.params['partitionColumn'] : ''}">
+                        <div class="form-text">Column for parallel extraction/Kafka partitioning</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="partitions" class="form-label">Number of Partitions</label>
+                        <input type="number" class="form-control" id="partitions" min="1" value="1"
+                               th:value="${job != null ? job.params['partitions'] : 1}">
+                        <div class="form-text">SQL/Kafka partitions (must match)</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="keyColumn" class="form-label">Key Column (Optional)</label>
+                        <input type="text" class="form-control" id="keyColumn"
+                               th:value="${job != null ? job.params['keyColumn'] : ''}">
+                        <div class="form-text">Column to use as Kafka message key</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="threads" class="form-label">Threads</label>
+                        <input type="number" class="form-control" id="threads" min="1" value="4"
+                               th:value="${job != null ? job.params['threads'] : 4}">
+                        <div class="form-text">Number of processing threads</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="streamBatchSize" class="form-label">Stream Batch Size</label>
+                        <input type="number" class="form-control" id="streamBatchSize" min="100" max="1000000" value="50000"
+                               th:value="${job != null ? job.params['streamBatchSize'] : 50000}">
+                        <div class="form-text">Number of records per batch</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="d-flex gap-2 mb-4">
+            <button type="submit" class="btn btn-primary">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-check-lg me-1" viewBox="0 0 16 16">
+                    <path d="M12.736 3.97a.733.733 0 0 1 1.047 0c.286.289.29.756.01 1.05L7.88 12.01a.733.733 0 0 1-1.065.02L3.217 8.384a.757.757 0 0 1 0-1.06.733.733 0 0 1 1.047 0l3.052 3.093 5.4-6.425z"/>
+                </svg>
+                <span th:text="${isEditMode ? 'Update Job' : 'Create Job'}">Create Job</span>
+            </button>
+            <a href="/" class="btn btn-secondary">Cancel</a>
+        </div>
+
+    </form>
+
+</div>
+
+<!-- Page-specific scripts -->
+<th:block layout:fragment="scripts">
+    <script th:inline="javascript">
+        // Передаем данные из Thymeleaf в JavaScript
+        const IS_EDIT_MODE = /*[[${isEditMode}]]*/ false;
+        const JOB_DATA = /*[[${job}]]*/ null;
+    </script>
+    <script th:src="@{/js/job-form.js(v=${timestamp})}"></script>
+</th:block>
+
+</body>
+</html>

@@ -51,7 +51,7 @@ public class JobMapper {
             return JobEntity.builder()
                     .id(etlJob.getJobId())
                     .name(etlJob.getJobId()) // По умолчанию name = id
-                    .sourceQuery(etlJob.getSourceQuery())
+                    .source(etlJob.getSource())
                     .target(etlJob.getTargetTable())
                     .params(paramsJson)
                     .createdBy(createdBy)
@@ -81,7 +81,7 @@ public class JobMapper {
 
             return new EtlJob(
                     entity.getId(),
-                    entity.getSourceQuery(),
+                    entity.getSource(),
                     entity.getTarget(),
                     parameters
             );
@@ -104,7 +104,7 @@ public class JobMapper {
         try {
             String paramsJson = objectMapper.writeValueAsString(etlJob.getParameters());
 
-            existingEntity.setSourceQuery(etlJob.getSourceQuery());
+            existingEntity.setSource(etlJob.getSource());
             existingEntity.setTarget(etlJob.getTargetTable());
             existingEntity.setParams(paramsJson);
             // name, createdAt, createdBy, status, description остаются без изменений

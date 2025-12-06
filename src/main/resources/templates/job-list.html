@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      xmlns:layout="http://www.ultraq.net.nz/thymeleaf/layout"
+      layout:decorate="~{layout}">
+<head>
+    <title th:text="${pageTitle}">Jobs | ETL Engine</title>
+</head>
+<body>
+
+<!-- Main Content -->
+<div layout:fragment="content">
+
+    <!-- Toolbar -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2 class="mb-0">ETL Jobs</h2>
+        <a href="/jobs/new" class="btn btn-primary">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-plus-lg me-1" viewBox="0 0 16 16">
+                <path fill-rule="evenodd" d="M8 2a.5.5 0 0 1 .5.5v5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5v-5A.5.5 0 0 1 8 2"/>
+            </svg>
+            Create New Job
+        </a>
+    </div>
+
+    <!-- Jobs Table -->
+    <div class="table-container">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Job ID</th>
+                            <th>Source</th>
+                            <th>Target</th>
+                            <th>Status</th>
+                            <th style="width: 280px;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Если список jobs пустой -->
+                        <tr th:if="${#lists.isEmpty(jobs)}">
+                            <td colspan="5" class="text-center text-muted py-4">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" class="bi bi-inbox mb-2" viewBox="0 0 16 16">
+                                    <path d="M4.98 4a.5.5 0 0 0-.39.188L1.54 8H6a.5.5 0 0 1 .5.5 1.5 1.5 0 1 0 3 0A.5.5 0 0 1 10 8h4.46l-3.05-3.812A.5.5 0 0 0 11.02 4zm9.954 5H10.45a2.5 2.5 0 0 1-4.9 0H1.066l.32 2.562a.5.5 0 0 0 .497.438h12.234a.5.5 0 0 0 .496-.438zM3.809 3.563A1.5 1.5 0 0 1 4.981 3h6.038a1.5 1.5 0 0 1 1.172.563l3.7 4.625a.5.5 0 0 1 .105.374l-.39 3.124A1.5 1.5 0 0 1 14.117 13H1.883a1.5 1.5 0 0 1-1.489-1.314l-.39-3.124a.5.5 0 0 1 .106-.374z"/>
+                                </svg>
+                                <div>No jobs found. Create your first ETL job!</div>
+                            </td>
+                        </tr>
+
+                        <!-- Список jobs -->
+                        <tr th:each="job : ${jobs}">
+                            <!-- Job ID -->
+                            <td>
+                                <strong th:text="${job.id}">job-001</strong>
+                            </td>
+
+                            <!-- Source (SQL query or Kafka topic) -->
+                            <td>
+                                <span class="text-truncate-custom"
+                                      th:text="${job.source != null ? job.source : 'N/A'}"
+                                      th:title="${job.source}">
+                                    SELECT * FROM table
+                                </span>
+                            </td>
+
+                            <!-- Target -->
+                            <td>
+                                <span th:text="${job.target != null ? job.target : 'N/A'}">target_table</span>
+                            </td>
+
+                            <!-- Status Badge -->
+                            <td>
+                                <span class="badge"
+                                      th:classappend="${job.params['status'] == 'COMPLETED' ? 'badge-success' :
+                                                       job.params['status'] == 'FAILED' ? 'badge-error' :
+                                                       job.params['status'] == 'RUNNING' ? 'badge-contrast' :
+                                                       job.params['status'] == 'EXTRACTING' ? 'badge-contrast' :
+                                                       job.params['status'] == 'TRANSFORMING' ? 'badge-contrast' :
+                                                       job.params['status'] == 'LOADING' ? 'badge-contrast' :
+                                                       'badge-primary'}"
+                                      th:text="${job.params['status']}">
+                                    NOT_RUNNING
+                                </span>
+                            </td>
+
+                            <!-- Action Buttons -->
+                            <td>
+                                <div class="btn-group btn-group-sm" role="group">
+                                    <a th:href="@{/jobs/{id}(id=${job.id})}"
+                                       class="btn btn-outline-secondary"
+                                       title="View Details">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-eye" viewBox="0 0 16 16">
+                                            <path d="M16 8s-3-5.5-8-5.5S0 8 0 8s3 5.5 8 5.5S16 8 16 8M1.173 8a13 13 0 0 1 1.66-2.043C4.12 4.668 5.88 3.5 8 3.5s3.879 1.168 5.168 2.457A13 13 0 0 1 14.828 8q-.086.13-.195.288c-.335.48-.83 1.12-1.465 1.755C11.879 11.332 10.119 12.5 8 12.5s-3.879-1.168-5.168-2.457A13 13 0 0 1 1.172 8z"/>
+                                            <path d="M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5M4.5 8a3.5 3.5 0 1 1 7 0 3.5 3.5 0 0 1-7 0"/>
+                                        </svg>
+                                        View
+                                    </a>
+                                    <a th:href="@{/jobs/{id}/edit(id=${job.id})}"
+                                       class="btn btn-outline-secondary"
+                                       title="Edit Job">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-pencil" viewBox="0 0 16 16">
+                                            <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325"/>
+                                        </svg>
+                                        Edit
+                                    </a>
+                                    <button class="btn btn-outline-success"
+                                            th:data-job-id="${job.id}"
+                                            onclick="JobList.runJob(this.dataset.jobId)"
+                                            title="Run Job">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-play-fill" viewBox="0 0 16 16">
+                                            <path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393"/>
+                                        </svg>
+                                        Run
+                                    </button>
+                                    <button class="btn btn-outline-danger"
+                                            th:data-job-id="${job.id}"
+                                            onclick="JobList.deleteJob(this.dataset.jobId)"
+                                            title="Delete Job">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-trash" viewBox="0 0 16 16">
+                                            <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/>
+                                            <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/>
+                                        </svg>
+                                        Delete
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+    </div>
+
+</div>
+
+<!-- Page-specific scripts -->
+<th:block layout:fragment="scripts">
+    <script th:src="@{/js/job-list.js(v=${timestamp})}"></script>
+</th:block>
+
+</body>
+</html>

@@ -11,7 +11,7 @@ import java.util.Map;
 @ToString
 public class EtlJob {
     private final String jobId;
-    private final String sourceQuery;
+    private final String source;
     private final String targetTable;
     private final Map<String, Object> parameters;
 

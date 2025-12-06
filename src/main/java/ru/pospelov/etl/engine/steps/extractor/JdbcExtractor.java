@@ -12,6 +12,7 @@ import ru.pospelov.etl.engine.exception.EtlException;
 import ru.pospelov.etl.engine.exception.ExtractionException;
 import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
+import ru.pospelov.etl.engine.schema.SchemaRegistryService;
 
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
@@ -32,7 +33,7 @@ public class JdbcExtractor implements Extractor {
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(JdbcExtractor.class);
 
     private final JdbcTemplate jdbcTemplate;
-    private final ru.pospelov.etl.engine.schema.SchemaRegistryService schemaRegistryService;
+    private final SchemaRegistryService schemaRegistryService;
 
     @Override
     public String getType() {
@@ -41,7 +42,7 @@ public class JdbcExtractor implements Extractor {
 
     @Override
     public void extract(EtlJob job, Consumer<Collection<EtlRecord>> batchConsumer) {
-        String query = job.getSourceQuery();
+        String query = job.getSource();
         if (query == null) {
             query = Objects.toString(job.getParam("query"), "");
         }
@@ -268,6 +269,10 @@ public class JdbcExtractor implements Extractor {
 
         @Override
         public Void extractData(ResultSet rs) throws SQLException {
+            // Оптимизация: получать по 10000 строк за раз от БД
+            // Уменьшает количество roundtrips к SQL Server
+            rs.setFetchSize(10000);
+
             ResultSetMetaData md = rs.getMetaData();
             List<EtlRecord> currentBatch = new ArrayList<>(batchSize);
 

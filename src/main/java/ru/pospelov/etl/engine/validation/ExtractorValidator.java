@@ -22,13 +22,13 @@ public class ExtractorValidator implements ComponentValidator {
     }
     
     private void validateSqlExtractor(EtlJob job, ValidationResult result) {
-        String query = job.getSourceQuery();
+        String query = job.getSource();
         if (query == null || query.isBlank()) {
             query = Objects.toString(job.getParam("query"), "");
         }
         if (query.isBlank()) {
-            result.addError("sourceQuery", 
-                "SQL extractor requires 'sourceQuery' or 'query' parameter");
+            result.addError("source",
+                "SQL extractor requires 'source' or 'query' parameter");
         }
         
         // Validate optional parameters with type checking

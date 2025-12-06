@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<body>
+
+<!-- Scripts Fragment -->
+<th:block th:fragment="scripts">
+
+    <!-- Bootstrap JS Bundle (includes Popper) -->
+    <script th:src="@{/webjars/bootstrap/5.3.2/js/bootstrap.bundle.min.js}"></script>
+
+    <!-- Common app JavaScript -->
+    <script th:src="@{/js/common.js(v=${timestamp})}"></script>
+
+    <!-- Sidebar toggle functionality -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const sidebarToggle = document.getElementById('sidebarToggle');
+            const wrapper = document.getElementById('wrapper');
+
+            if (sidebarToggle) {
+                sidebarToggle.addEventListener('click', function() {
+                    document.getElementById('sidebar-wrapper').classList.toggle('collapsed');
+                });
+            }
+        });
+    </script>
+
+</th:block>
+
+</body>
+</html>

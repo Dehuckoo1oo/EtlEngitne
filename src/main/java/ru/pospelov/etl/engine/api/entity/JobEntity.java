@@ -35,10 +35,10 @@ public class JobEntity {
     private String name;
 
     /**
-     * SQL-запрос источника (для SQL extractor) или null для Kafka
+     * Источник данных: SQL-запрос (для SQL extractor) или Kafka топик (для Kafka extractor)
      */
-    @Column(name = "SourceQuery", columnDefinition = "NVARCHAR(MAX)")
-    private String sourceQuery;
+    @Column(name = "Source", columnDefinition = "NVARCHAR(MAX)")
+    private String source;
 
     /**
      * Целевая таблица (для SQL loader) или null для Kafka

@@ -268,68 +268,68 @@ services:
     networks:
       - kafka
 
-  ksqldb-server:
-    image: confluentinc/ksqldb-server:latest
-    environment:
-      KSQL_CONFIG_DIR: "/etc/ksql"
-      KSQL_BOOTSTRAP_SERVERS: "broker-i1:19092,broker-i2:19092,broker-i3:19092"
-      KSQL_LISTENERS: "http://0.0.0.0:8088"
-      KSQL_CACHE_MAX_BYTES_BUFFERING: "52428800"
-      KSQL_KSQL_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
-      KSQL_STREAMS_NUM_STREAM_THREADS: "8"
-      KSQL_OPTS: "-Dconfluent.support.metrics.enabled=false -Xmx32g -Xms8g -Dksql.streams.num.stream.threads=8"
-    deploy:
-      resources:
-        limits:
-          memory: 64g
-          cpus: "8.0"
-        reservations:
-          memory: 32g
-          cpus: "4.0"
-    ports:
-      - "50001:8088"
-    depends_on:
-      - schema-registry
-      - broker-i1
-      - broker-i2
-      - broker-i3
-    networks:
-      - kafka
+#  ksqldb-server:
+#    image: confluentinc/ksqldb-server:latest
+#    environment:
+#      KSQL_CONFIG_DIR: "/etc/ksql"
+#      KSQL_BOOTSTRAP_SERVERS: "broker-i1:19092,broker-i2:19092,broker-i3:19092"
+#      KSQL_LISTENERS: "http://0.0.0.0:8088"
+#      KSQL_CACHE_MAX_BYTES_BUFFERING: "52428800"
+#      KSQL_KSQL_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+#      KSQL_STREAMS_NUM_STREAM_THREADS: "8"
+#      KSQL_OPTS: "-Dconfluent.support.metrics.enabled=false -Xmx32g -Xms8g -Dksql.streams.num.stream.threads=8"
+#    deploy:
+#      resources:
+#        limits:
+#          memory: 64g
+#          cpus: "8.0"
+#        reservations:
+#          memory: 32g
+#          cpus: "4.0"
+#    ports:
+#      - "50001:8088"
+#    depends_on:
+#      - schema-registry
+#      - broker-i1
+#      - broker-i2
+#      - broker-i3
+#    networks:
+#      - kafka
+#
+#  ksqldb-cli:
+#    image: confluentinc/ksqldb-cli:latest
+#    depends_on:
+#      - ksqldb-server
+#    entrypoint: /bin/sh
+#    tty: true
+#    networks:
+#      - kafka
 
-  ksqldb-cli:
-    image: confluentinc/ksqldb-cli:latest
-    depends_on:
-      - ksqldb-server
-    entrypoint: /bin/sh
-    tty: true
-    networks:
-      - kafka
-
-  etl-engine:
-    image: etl-engine:latest
-    container_name: etl-engine
-    ports:
-      - "8099:8080"
-    networks:
-      - kafka
-    environment:
-      # Database connection
-      - SPRING_DATASOURCE_URL=jdbc:sqlserver://sqlserver:1433;databaseName=SUPPORT;encrypt=true;trustServerCertificate=true;
-      - SPRING_DATASOURCE_USERNAME=sa
-      - SPRING_DATASOURCE_PASSWORD=verYs3cret
-      # Kafka connection
-      - KAFKA_BOOTSTRAP_SERVERS=broker-i1:19092,broker-i2:19092,broker-i3:19092
-      - KAFKA_SCHEMA_REGISTRY_URL=http://schema-registry:8081
-    restart: unless-stopped
-    depends_on:
-      - sqlserver
-      - broker-i1
-      - broker-i2
-      - broker-i3
-      - schema-registry
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-      start_period: 60s
+#  etl-engine:
+#    image: etl-engine:latest
+#    container_name: etl-engine
+#    ports:
+#      - "8099:8080"
+#    networks:
+#      - kafka
+#    environment:
+#      # Database connection
+#      - SPRING_DATASOURCE_URL=jdbc:sqlserver://sqlserver:1433;databaseName=SUPPORT;encrypt=true;trustServerCertificate=true;
+#      - SPRING_DATASOURCE_USERNAME=sa
+#      - SPRING_DATASOURCE_PASSWORD=verYs3cret
+#      # Kafka connection
+#      - KAFKA_BOOTSTRAP_SERVERS=broker-i1:19092,broker-i2:19092,broker-i3:19092
+#      - KAFKA_SCHEMA_REGISTRY_URL=http://schema-registry:8081
+#    restart: unless-stopped
+#    depends_on:
+#      - sqlserver
+#      - broker-i1
+#      - broker-i2
+#      - broker-i3
+#      - schema-registry
+#    healthcheck:
+#      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+#      interval: 30s
+#      timeout: 3s
+#      retries: 3
+#      start_period: 60s

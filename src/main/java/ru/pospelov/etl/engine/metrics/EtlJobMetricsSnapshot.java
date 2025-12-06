@@ -19,14 +19,17 @@ public record EtlJobMetricsSnapshot(
         long extractDurationMillis,
         long transformDurationMillis,
         long loadDurationMillis,
+        long totalDurationMillis,  // Wall-clock time (real execution time)
         double throughput
 ) {
 
+    /**
+     * Returns the total wall-clock duration of the job execution.
+     * For streaming pipelines, this is the actual time from start to finish,
+     * not the sum of individual phase durations (which may overlap).
+     */
     public Duration totalDuration() {
-        if (startedAt == null || lastUpdatedAt == null) {
-            return Duration.ZERO;
-        }
-        return Duration.between(startedAt, lastUpdatedAt);
+        return Duration.ofMillis(totalDurationMillis);
     }
 }
 

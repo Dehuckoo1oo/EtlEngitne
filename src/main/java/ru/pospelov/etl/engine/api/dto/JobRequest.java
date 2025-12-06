@@ -24,11 +24,13 @@ public class JobRequest {
     private String id;
 
     /**
-     * SQL-запрос для извлечения данных (для SQL extractor)
-     * Может быть null для Kafka extractor
+     * Источник данных:
+     * - SQL-запрос для извлечения данных (для SQL extractor)
+     * - Kafka топик (для Kafka extractor)
+     * Может быть null в зависимости от типа extractor
      */
-    @JsonProperty("sourceQuery")
-    private String sourceQuery;
+    @JsonProperty("source")
+    private String source;
 
     /**
      * Целевая таблица для загрузки данных (для SQL loader)

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title th:text="${pageTitle} ?: 'ETL Engine'">ETL Engine</title>
+
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" th:href="@{/webjars/bootstrap/5.3.2/css/bootstrap.min.css}">
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" th:href="@{/css/app.css(v=${timestamp})}">
+
+    <!-- Additional page-specific styles -->
+    <th:block layout:fragment="styles"></th:block>
+</head>
+<body>
+    <div class="d-flex" id="wrapper">
+
+        <!-- Sidebar -->
+        <div th:replace="~{fragments/sidebar :: sidebar}"></div>
+
+        <!-- Page Content -->
+        <div id="page-content-wrapper" class="w-100">
+
+            <!-- Header -->
+            <div th:replace="~{fragments/header :: header}"></div>
+
+            <!-- Main Content -->
+            <main class="container-fluid p-4">
+                <th:block layout:fragment="content">
+                    <!-- Page content goes here -->
+                </th:block>
+            </main>
+
+        </div>
+
+    </div>
+
+    <!-- Scripts -->
+    <div th:replace="~{fragments/scripts :: scripts}"></div>
+
+    <!-- Additional page-specific scripts -->
+    <th:block layout:fragment="scripts"></th:block>
+
+</body>
+</html>

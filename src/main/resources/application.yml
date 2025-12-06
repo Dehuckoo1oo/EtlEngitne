@@ -1,6 +1,12 @@
 spring:
   application:
     name: EtlEngine
+  thymeleaf:
+    cache: false
+    prefix: classpath:/templates/
+    suffix: .html
+    mode: HTML
+    encoding: UTF-8
   datasource:
     url: jdbc:sqlserver://localhost:1433;databaseName=SUPPORT;encrypt=true;trustServerCertificate=true;
     username: sa
@@ -8,11 +14,12 @@ spring:
     driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
     hikari:
       maximum-pool-size: 20
-      minimum-idle: 2
+      minimum-idle: 8
       connection-timeout: 300000     # 5 минут
       idle-timeout: 600000           # 10 минут
       max-lifetime: 1800000          # 30 минут
       connection-test-query: SELECT 1
+      register-mbeans: true
   jpa:
     hibernate:
       ddl-auto: validate              # Flyway управляет схемой, Hibernate только валидирует
@@ -38,6 +45,24 @@ spring:
 kafka:
   bootstrap-servers: localhost:29092,localhost:39092,localhost:49092
   schema-registry-url: http://localhost:8081
+etl:
+  # Количество физических CPU ядер для расчёта размеров пулов, определяет количество параллельных джобов.
+  available-processors: 4
+
+  # Коэффициенты для расчёта размеров пулов
+  pool:
+    # corePoolSize = available-processors * core-multiplier
+    core-multiplier: 0.5
+    # maxPoolSize = available-processors * max-multiplier
+    max-multiplier: 1.0
+    # Размер очереди задач
+    queue-size: 500
+    # Keep-alive время для idle потоков (секунды)
+    keep-alive-seconds: 120
+
+  # HikariCP: maxPoolSize + фиксированный запас для JPA/HTTP
+  hikari-extra-connections: 8
+
 logging:
   level:
     root: INFO
