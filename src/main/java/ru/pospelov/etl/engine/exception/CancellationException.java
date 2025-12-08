@@ -1,4 +1,4 @@
-package ru.pospelov.etl.engine.engine;
+package ru.pospelov.etl.engine.exception;
 
 /**
  * Exception thrown when ETL pipeline execution is cancelled.

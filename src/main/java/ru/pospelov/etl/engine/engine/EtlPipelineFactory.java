@@ -3,11 +3,7 @@ package ru.pospelov.etl.engine.engine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
-import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
-import ru.pospelov.etl.engine.exception.EtlException;
-import ru.pospelov.etl.engine.exception.ExtractionException;
-import ru.pospelov.etl.engine.exception.LoadingException;
-import ru.pospelov.etl.engine.exception.TransformationException;
+import ru.pospelov.etl.engine.exception.*;
 import ru.pospelov.etl.engine.metrics.EtlJobStatus;
 import ru.pospelov.etl.engine.metrics.EtlMetrics;
 import ru.pospelov.etl.engine.metrics.EtlMetricsCollector;
@@ -186,8 +182,6 @@ public class EtlPipelineFactory {
 
                         // Transform batch
                         long transformStartNanos = System.nanoTime();
-                        // Статус TRANSFORMING вызываем только для первого батча
-                        // (для тестов и корректности статусов)
                         if (batchNum == 1) {
                             metrics.onJobStatusChanged(job, EtlJobStatus.TRANSFORMING);
                         }
@@ -235,9 +229,7 @@ public class EtlPipelineFactory {
                                         job.getJobId(), batchNum, transformedCount, loadDurationMillis);
                             }
                         }
-
                         cancellationToken.checkCancellation();
-
                     } catch (CancellationException e) {
                         throw e;
                     } catch (Exception e) {
@@ -283,13 +275,6 @@ public class EtlPipelineFactory {
                         totalLoaded.get(), e.getMessage(), e);
                 throw e;
             }
-        }
-
-        private long calculateThroughput(int records, long milliseconds) {
-            if (milliseconds == 0) {
-                return 0;
-            }
-            return (records * 1000L) / milliseconds;
         }
 
         private Collection<EtlRecord> transformBatch(EtlJob job, Collection<EtlRecord> batch) {
@@ -364,6 +349,13 @@ public class EtlPipelineFactory {
                 deadLetterQueue.publish(wrapped);
                 throw wrapped;
             }
+        }
+
+        private long calculateThroughput(int records, long milliseconds) {
+            if (milliseconds == 0) {
+                return 0;
+            }
+            return (records * 1000L) / milliseconds;
         }
     }
 }

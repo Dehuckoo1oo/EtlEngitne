@@ -310,7 +310,7 @@ public class KafkaToSqlIntegrationTest {
                         Map.entry("transformerType", "noop"),
                         Map.entry("topic", "order-events-value"),
                         Map.entry("format", "avro"),
-                        Map.entry("threads", 4),
+                        Map.entry("threads", 8),
                         // Streaming batch size - размер батча для потоковой обработки
                         // Вместо загрузки всех 2M записей в память, обрабатываются батчами по 100K
                         Map.entry("streamBatchSize", 100_000),
@@ -349,7 +349,7 @@ public class KafkaToSqlIntegrationTest {
                         "endTimestamp", kafkaEnd.plusSeconds(60).toEpochMilli(),     // Заканчиваем немного позже для надежности
                         // Streaming batch size - единый размер батча для всей обработки
                         "streamBatchSize", 100_000,
-                        "threads", 4
+                        "threads", 8
                 )
         );
         pipelineFactory.create(fromKafka).run(fromKafka);

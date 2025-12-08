@@ -1,7 +1,7 @@
 package ru.pospelov.etl.engine;
 
 import org.junit.jupiter.api.Test;
-import ru.pospelov.etl.engine.engine.CancellationException;
+import ru.pospelov.etl.engine.exception.CancellationException;
 import ru.pospelov.etl.engine.engine.DeadLetterQueue;
 import ru.pospelov.etl.engine.engine.EtlComponentRegistry;
 import ru.pospelov.etl.engine.engine.EtlPipeline;

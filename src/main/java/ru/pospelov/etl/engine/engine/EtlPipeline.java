@@ -1,5 +1,6 @@
 package ru.pospelov.etl.engine.engine;
 
+import ru.pospelov.etl.engine.exception.CancellationException;
 import ru.pospelov.etl.engine.model.EtlJob;
 
 /**
@@ -11,7 +12,7 @@ public interface EtlPipeline {
      * Executes the ETL pipeline for the given job.
      * 
      * @param job the ETL job to execute
-     * @throws ru.pospelov.etl.engine.engine.CancellationException if execution was cancelled
+     * @throws CancellationException if execution was cancelled
      */
     void run(EtlJob job);
     

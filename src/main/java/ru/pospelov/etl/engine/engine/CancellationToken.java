@@ -1,5 +1,7 @@
 package ru.pospelov.etl.engine.engine;
 
+import ru.pospelov.etl.engine.exception.CancellationException;
+
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
