@@ -1,4 +1,4 @@
-package ru.pospelov.etl.engine.steps.extractor;
+package ru.pospelov.etl.engine.steps.extractor.kafka;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -15,6 +15,7 @@ import ru.pospelov.etl.engine.exception.EtlException;
 import ru.pospelov.etl.engine.exception.ExtractionException;
 import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
+import ru.pospelov.etl.engine.steps.extractor.Extractor;
 
 import java.time.Duration;
 import java.time.Instant;

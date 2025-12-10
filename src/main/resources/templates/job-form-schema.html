@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      xmlns:layout="http://www.ultraq.net.nz/thymeleaf/layout"
+      layout:decorate="~{layout}">
+<head>
+    <title th:text="${pageTitle}">Create/Edit Job | ETL Engine</title>
+</head>
+<body>
+
+<!-- Main Content -->
+<div layout:fragment="content">
+
+    <!-- Toolbar -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="d-flex align-items-center gap-3">
+            <a href="/" class="btn btn-outline-secondary">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-left me-1" viewBox="0 0 16 16">
+                    <path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8"/>
+                </svg>
+                Cancel
+            </a>
+            <h2 class="mb-0" th:text="${isEditMode ? 'Edit Job' : 'Create New Job'}">Create New Job</h2>
+        </div>
+        <div class="badge bg-info">
+            Schema-Driven Form
+        </div>
+    </div>
+
+    <!-- Form -->
+    <form id="jobForm">
+
+        <!-- Basic Information -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Basic Information</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <!-- Job ID -->
+                    <div class="col-md-12">
+                        <label for="jobId" class="form-label">Job ID <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="jobId"
+                               th:value="${job != null ? job.id : ''}"
+                               th:readonly="${isEditMode}"
+                               required>
+                        <div class="form-text">Unique identifier for this ETL job</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Component Selection -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Component Selection</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <!-- Extractor Type -->
+                    <div class="col-md-4">
+                        <label for="extractorType" class="form-label">
+                            Extractor Type <span class="text-danger">*</span>
+                        </label>
+                        <select class="form-select" id="extractorType" required>
+                            <option value="">Select extractor...</option>
+                            <option value="sql" th:selected="${job != null and job.params['extractorType'] == 'sql'}">SQL Database</option>
+                            <option value="kafka" th:selected="${job != null and job.params['extractorType'] == 'kafka'}">Kafka Topic</option>
+                        </select>
+                        <div class="form-text">Data source type</div>
+                    </div>
+
+                    <!-- Transformer Type -->
+                    <div class="col-md-4">
+                        <label for="transformerType" class="form-label">
+                            Transformer Type <span class="text-danger">*</span>
+                        </label>
+                        <select class="form-select" id="transformerType" required>
+                            <option value="noop" th:selected="${job == null or job.params['transformerType'] == 'noop'}">No Operation</option>
+                            <option value="avro" th:selected="${job != null and job.params['transformerType'] == 'avro'}">Avro to Record</option>
+                            <option value="record-to-avro" th:selected="${job != null and job.params['transformerType'] == 'record-to-avro'}">Record to Avro</option>
+                        </select>
+                        <div class="form-text">Data transformation type</div>
+                    </div>
+
+                    <!-- Loader Type -->
+                    <div class="col-md-4">
+                        <label for="loaderType" class="form-label">
+                            Loader Type <span class="text-danger">*</span>
+                        </label>
+                        <select class="form-select" id="loaderType" required>
+                            <option value="">Select loader...</option>
+                            <option value="jdbc" th:selected="${job != null and job.params['loaderType'] == 'jdbc'}">JDBC Loader</option>
+                            <option value="fast-sql" th:selected="${job != null and job.params['loaderType'] == 'fast-sql'}">Fast SQL (Bulk Insert)</option>
+                            <option value="kafka" th:selected="${job != null and job.params['loaderType'] == 'kafka'}">Kafka Topic</option>
+                        </select>
+                        <div class="form-text">Data target type</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Extractor Configuration (Dynamically Generated) -->
+        <div class="card mb-4" id="extractorConfigCard" style="display: none;">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" class="bi bi-download me-2" viewBox="0 0 16 16">
+                        <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5"/>
+                        <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708z"/>
+                    </svg>
+                    Extractor Configuration
+                </h5>
+            </div>
+            <div class="card-body">
+                <div id="extractorConfigFields">
+                    <!-- Dynamically generated fields will appear here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Transformer Configuration (Dynamically Generated) -->
+        <div class="card mb-4" id="transformerConfigCard" style="display: none;">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" class="bi bi-arrow-left-right me-2" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="M1 11.5a.5.5 0 0 0 .5.5h11.793l-3.147 3.146a.5.5 0 0 0 .708.708l4-4a.5.5 0 0 0 0-.708l-4-4a.5.5 0 0 0-.708.708L13.293 11H1.5a.5.5 0 0 0-.5.5m14-7a.5.5 0 0 1-.5.5H2.707l3.147 3.146a.5.5 0 1 1-.708.708l-4-4a.5.5 0 0 1 0-.708l4-4a.5.5 0 1 1 .708.708L2.707 4H14.5a.5.5 0 0 1 .5.5"/>
+                    </svg>
+                    Transformer Configuration
+                </h5>
+            </div>
+            <div class="card-body">
+                <div id="transformerConfigFields">
+                    <!-- Dynamically generated fields will appear here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Loader Configuration (Dynamically Generated) -->
+        <div class="card mb-4" id="loaderConfigCard" style="display: none;">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" class="bi bi-upload me-2" viewBox="0 0 16 16">
+                        <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5"/>
+                        <path d="M7.646 4.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 5.707V14.5a.5.5 0 0 1-1 0V5.707L5.354 7.854a.5.5 0 1 1-.708-.708z"/>
+                    </svg>
+                    Loader Configuration
+                </h5>
+            </div>
+            <div class="card-body">
+                <div id="loaderConfigFields">
+                    <!-- Dynamically generated fields will appear here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Submit Button -->
+        <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-check-circle me-1" viewBox="0 0 16 16">
+                    <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/>
+                    <path d="m10.97 4.97-.02.022-3.473 4.425-2.093-2.094a.75.75 0 0 0-1.06 1.06L6.97 11.03a.75.75 0 0 0 1.079-.02l3.992-4.99a.75.75 0 0 0-1.071-1.05"/>
+                </svg>
+                <span th:text="${isEditMode ? 'Update Job' : 'Create Job'}">Create Job</span>
+            </button>
+            <a href="/" class="btn btn-outline-secondary">Cancel</a>
+        </div>
+
+    </form>
+
+</div>
+
+<!-- Page Scripts -->
+<th:block layout:fragment="scripts">
+    <script th:inline="javascript">
+        // Pass data from Thymeleaf to JavaScript
+        const IS_EDIT_MODE = [[${isEditMode}]];
+        const JOB_DATA = [[${job}]];
+    </script>
+    <script src="/js/job-form-schema.js"></script>
+</th:block>
+
+</body>
+</html>
