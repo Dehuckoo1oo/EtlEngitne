@@ -1,22 +1,17 @@
-темная тема работает не до конца - на главной странице созданный джоб не становится темным, а шрифты меняют цвет и не видно светлый шрифт на белом фоне джоба.
-метрики при запуске джоба не появляются, появляются только если нажать f5
-Total Duration: 00:00:00, хотя Extract Duration: 14.11 sec; Transform Duration: 0.01 sec; Load Duration: 42.19 sec;
 Проверить, как используется схема в интеграционном тесте и выяснить почему она используется только при загрузке в кафку
-теперь зачем мне указывать target table и target при пайплайне kafka -> sql?
 судя по тесту не нужно указывать количество партиций при kafka -> sql так же как Partition Column и Key Column
 
-на главном экране с джобами все еще остались записи source и target, они бывают пустые в зависимости от направления, записываются только таблица и запрос, т.е. sql, а топики кафки не записываются.
 
-почему в выпадающем списке avro schema subject я вижу 2 записи order-events-value и order-events-value-value, при этом у меня загружена всего одна схема.
+ВАЖНО!!!
+нужно собрать все поля для шагов loader, transform и extract, убрать дефолтные значения, сделать поля обязательными и в api и в форме работать только с этими полями, т.е. если для loader нужны определенные поля - они должны появится на форме, а если не нужны, то этих полей на форме быть не должно.
+Должна проходить валидация этих полей.
 
-почему я вижу в логе не верное количество extracted records?
-2025-12-06 13:07:20.259 [pool-3-thread-3] INFO  r.p.e.e.e.EtlPipelineFactory$StreamingEtlPipeline - Job 'sql-to-kafka' batch #10: extracted 12513 records (total: 137763)
-2025-12-06 13:07:21.186 [pool-3-thread-7] INFO  r.p.e.e.e.EtlPipelineFactory$StreamingEtlPipeline - Job 'sql-to-kafka' batch #20: extracted 13219 records (total: 276104)
-2025-12-06 13:07:22.233 [pool-3-thread-2] INFO  r.p.e.e.e.EtlPipelineFactory$StreamingEtlPipeline - Job 'sql-to-kafka' batch #30: extracted 15024 records (total: 417230)
-2025-12-06 13:07:23.447 [pool-3-thread-5] INFO  r.p.e.e.e.EtlPipelineFactory$StreamingEtlPipeline - Job 'sql-to-kafka' batch #40: extracted 15252 records (total: 556494)
-2025-12-06 13:07:24.652 [pool-3-thread-4] INFO  r.p.e.e.e.EtlPipelineFactory$StreamingEtlPipeline - Job 'sql-to-kafka' batch #50: extracted 12538 records (total: 692865)
-2025-12-06 13:07:25.804 [pool-3-thread-8] INFO  r.p.e.e.e.EtlPipelineFactory$StreamingEtlPipeline - Job 'sql-to-kafka' batch #60: extracted 13078 records (total: 831708)
-2025-12-06 13:07:26.926 [pool-3-thread-6] INFO  r.p.e.e.e.EtlPipelineFactory$StreamingEtlPipeline - Job 'sql-to-kafka' batch #70: extracted 12716 records (total: 970477)
->>потому, что это каждый 10 батч.
+Сделать новый KafkaExtract, который зависит от числа партиций в топике - читал все партиции, пока не наберет строк в размере батча.
 
+зачем нужен именно objectMapper.findAndRegisterModules();? можно по другому?
 
+зарефакторить JdbcExtractor, JdbcPartitionQueryTask и JdbcStreamingResultSetExtractor убрать авро, т.к. оно теперь в трансформере.
+
+правильно ли работать с object в [JdbcStreamingResultSetExtractor.java](src/main/java/ru/pospelov/etl/engine/steps/extractor/jdbc/JdbcStreamingResultSetExtractor.java)
+String col = md.getColumnLabel(i);
+                Object val = rs.getObject(i);?

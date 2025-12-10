@@ -11,6 +11,18 @@ import ru.pospelov.etl.engine.api.exception.JobAlreadyRunningException;
 import ru.pospelov.etl.engine.api.exception.JobExecutionException;
 import ru.pospelov.etl.engine.api.exception.JobNotFoundException;
 import ru.pospelov.etl.engine.api.repository.JobRepository;
+import ru.pospelov.etl.engine.config.KafkaFormat;
+import ru.pospelov.etl.engine.config.extractor.ExtractorConfig;
+import ru.pospelov.etl.engine.config.extractor.JdbcExtractorConfig;
+import ru.pospelov.etl.engine.config.extractor.KafkaExtractorConfig;
+import ru.pospelov.etl.engine.config.loader.FastSqlLoaderConfig;
+import ru.pospelov.etl.engine.config.loader.JdbcLoaderConfig;
+import ru.pospelov.etl.engine.config.loader.KafkaLoaderConfig;
+import ru.pospelov.etl.engine.config.loader.LoaderConfig;
+import ru.pospelov.etl.engine.config.transformer.AvroToRecordTransformerConfig;
+import ru.pospelov.etl.engine.config.transformer.NoopTransformerConfig;
+import ru.pospelov.etl.engine.config.transformer.RecordToAvroTransformerConfig;
+import ru.pospelov.etl.engine.config.transformer.TransformerConfig;
 import ru.pospelov.etl.engine.engine.EtlPipeline;
 import ru.pospelov.etl.engine.engine.EtlPipelineFactory;
 import ru.pospelov.etl.engine.metrics.EtlJobStatus;
@@ -23,13 +35,17 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.stream.Collectors;
 
 /**
- * Сервис для управления ETL job'ами.
- * Предоставляет бизнес-логику для CRUD операций и запуска job'ов.
+ * Service for managing ETL jobs.
+ * Provides business logic for CRUD operations and job execution.
+ *
+ * NOTE: This service bridges between the old DTO format (Map-based params)
+ * and the new type-safe configuration model. This will be fully replaced in Phase 7.
  */
 @Slf4j
 @Service
@@ -52,7 +68,7 @@ public class JobService {
     }
 
     /**
-     * Создает новый job
+     * Create a new job
      */
     public JobResponse createJob(JobRequest request) {
         validateJobRequest(request);
@@ -64,12 +80,12 @@ public class JobService {
         EtlJob job = toEtlJob(request);
         EtlJob savedJob = jobRepository.save(job);
 
-        log.info("Created job with id: {}", savedJob.getJobId());
+        log.info("Created job with id: {}", savedJob.jobId());
         return toJobResponse(savedJob);
     }
 
     /**
-     * Обновляет существующий job
+     * Update existing job
      */
     public JobResponse updateJob(String jobId, JobRequest request) {
         validateJobRequest(request);
@@ -78,7 +94,6 @@ public class JobService {
             throw new JobNotFoundException(jobId);
         }
 
-        // Ensure the id in request matches the path parameter
         if (!jobId.equals(request.getId())) {
             throw new IllegalArgumentException("Job id in path (%s) doesn't match id in request body (%s)"
                     .formatted(jobId, request.getId()));
@@ -87,12 +102,12 @@ public class JobService {
         EtlJob job = toEtlJob(request);
         EtlJob savedJob = jobRepository.save(job);
 
-        log.info("Updated job with id: {}", savedJob.getJobId());
+        log.info("Updated job with id: {}", savedJob.jobId());
         return toJobResponse(savedJob);
     }
 
     /**
-     * Получает job по id
+     * Get job by id
      */
     public JobResponse getJob(String jobId) {
         EtlJob job = jobRepository.findById(jobId)
@@ -101,7 +116,7 @@ public class JobService {
     }
 
     /**
-     * Получает все job'ы
+     * Get all jobs
      */
     public List<JobResponse> getAllJobs() {
         return jobRepository.findAll().stream()
@@ -110,7 +125,7 @@ public class JobService {
     }
 
     /**
-     * Удаляет job по id
+     * Delete job by id
      */
     public void deleteJob(String jobId) {
         if (!jobRepository.existsById(jobId)) {
@@ -124,27 +139,31 @@ public class JobService {
     }
 
     /**
-     * Запускает job вручную (без планировщика)
+     * Run job manually (without scheduler)
      */
     public JobRunResponse runJob(String jobId, JobRunRequest runRequest) {
         EtlJob job = jobRepository.findById(jobId)
                 .orElseThrow(() -> new JobNotFoundException(jobId));
 
-        // Проверяем, не выполняется ли уже этот job
+        // Check if job is already running
         checkJobNotRunning(jobId);
 
-        // Merge runtime parameters with job parameters
-        EtlJob jobWithRuntimeParams = mergeParameters(job, runRequest);
+        // Note: Runtime parameter merging is not supported with type-safe configs
+        // All configuration must be specified when creating/updating the job
+        if (runRequest != null && runRequest.getParams() != null && !runRequest.getParams().isEmpty()) {
+            log.warn("Runtime parameters are not supported with type-safe configuration. Ignoring: {}",
+                    runRequest.getParams().keySet());
+        }
 
         long startTime = Instant.now().toEpochMilli();
 
-        // Run job asynchronously using dedicated executor (NOT ForkJoinPool.commonPool!)
+        // Run job asynchronously using dedicated executor
         CompletableFuture.runAsync(() -> {
             try {
                 log.info("Starting execution of job: {}", jobId);
-                logJobConfiguration(jobWithRuntimeParams);
-                EtlPipeline pipeline = pipelineFactory.create(jobWithRuntimeParams);
-                pipeline.run(jobWithRuntimeParams);
+                logJobConfiguration(job);
+                EtlPipeline pipeline = pipelineFactory.createStreamingEtlPipeline();
+                pipeline.run(job);
                 log.info("Job {} completed successfully", jobId);
             } catch (Exception e) {
                 log.error("Job {} failed with error: {}", jobId, e.getMessage(), e);
@@ -161,12 +180,10 @@ public class JobService {
     }
 
     /**
-     * Проверяет, не выполняется ли уже job.
-     * Выбрасывает JobAlreadyRunningException если job уже в процессе выполнения.
+     * Check if job is already running
      */
     private void checkJobNotRunning(String jobId) {
         metricsCollector.getStatus(jobId).ifPresent(status -> {
-            // Проверяем, является ли статус "выполняющимся"
             if (isRunningStatus(status)) {
                 log.warn("Attempt to run job '{}' that is already running with status: {}", jobId, status);
                 throw new JobAlreadyRunningException(jobId, status);
@@ -175,7 +192,7 @@ public class JobService {
     }
 
     /**
-     * Проверяет, является ли статус "выполняющимся"
+     * Check if status is "running"
      */
     private boolean isRunningStatus(EtlJobStatus status) {
         return status == EtlJobStatus.RUNNING ||
@@ -185,70 +202,20 @@ public class JobService {
     }
 
     /**
-     * Объединяет параметры job'а с параметрами запуска
-     */
-    private EtlJob mergeParameters(EtlJob job, JobRunRequest runRequest) {
-        if (runRequest == null || runRequest.getParams() == null || runRequest.getParams().isEmpty()) {
-            return job;
-        }
-
-        Map<String, Object> mergedParams = new HashMap<>(job.getParameters());
-        mergedParams.putAll(runRequest.getParams());
-
-        return new EtlJob(
-                job.getJobId(),
-                job.getSource(),
-                job.getTargetTable(),
-                mergedParams
-        );
-    }
-
-    /**
-     * Логирует полную конфигурацию job'а перед запуском
+     * Log complete job configuration before execution
      */
     private void logJobConfiguration(EtlJob job) {
         log.info("========================================");
-        log.info("Job Configuration for: {}", job.getJobId());
+        log.info("Job Configuration for: {}", job.jobId());
         log.info("========================================");
-        log.info("Source: {}", job.getSource());
-        log.info("Target: {}", job.getTargetTable());
-        log.info("Parameters:");
-
-        Map<String, Object> params = job.getParameters();
-
-        // Основные типы компонентов
-        log.info("  extractorType: {}", params.get("extractorType"));
-        log.info("  transformerType: {}", params.get("transformerType"));
-        log.info("  loaderType: {}", params.get("loaderType"));
-
-        // Параметры производительности
-        log.info("  threads: {}", params.get("threads"));
-        log.info("  streamBatchSize: {}", params.get("streamBatchSize"));
-
-        // Параметры партиционирования
-        log.info("  partitionColumn: {}", params.get("partitionColumn"));
-        log.info("  partitions: {}", params.get("partitions"));
-
-        // Kafka-специфичные параметры
-        log.info("  topic: {}", params.get("topic"));
-        log.info("  format: {}", params.get("format"));
-        log.info("  avroSchema: {}", params.get("avroSchema"));
-        log.info("  keyColumn: {}", params.get("keyColumn"));
-        log.info("  startTimestamp: {}", params.get("startTimestamp"));
-        log.info("  endTimestamp: {}", params.get("endTimestamp"));
-
-        // Все остальные параметры
-        log.info("All parameters:");
-        params.forEach((key, value) -> {
-            if (value != null) {
-                log.info("  {} = {} ({})", key, value, value.getClass().getSimpleName());
-            }
-        });
+        log.info("Extractor: {} - {}", job.extractorConfig().type(), job.extractorConfig());
+        log.info("Transformer: {} - {}", job.transformerConfig().type(), job.transformerConfig());
+        log.info("Loader: {} - {}", job.loaderConfig().type(), job.loaderConfig());
         log.info("========================================");
     }
 
     /**
-     * Валидирует запрос создания/обновления job'а
+     * Validate job request
      */
     private void validateJobRequest(JobRequest request) {
         if (request.getId() == null || request.getId().trim().isEmpty()) {
@@ -259,7 +226,6 @@ public class JobService {
             throw new IllegalArgumentException("Job params are required");
         }
 
-        // Validate required parameters
         String extractorType = (String) request.getParams().get("extractorType");
         String transformerType = (String) request.getParams().get("transformerType");
         String loaderType = (String) request.getParams().get("loaderType");
@@ -278,26 +244,201 @@ public class JobService {
     }
 
     /**
-     * Конвертирует JobRequest в EtlJob
+     * Convert JobRequest to EtlJob (bridge between old DTO format and new type-safe model)
      */
     private EtlJob toEtlJob(JobRequest request) {
-        return new EtlJob(
-                request.getId(),
-                request.getSource(),
-                request.getTarget(),
-                request.getParams()
-        );
+        Map<String, Object> params = request.getParams();
+
+        String extractorType = (String) params.get("extractorType");
+        String transformerType = (String) params.get("transformerType");
+        String loaderType = (String) params.get("loaderType");
+
+        ExtractorConfig extractorConfig = createExtractorConfig(extractorType, params, request.getSource());
+        TransformerConfig transformerConfig = createTransformerConfig(transformerType, params);
+        LoaderConfig loaderConfig = createLoaderConfig(loaderType, params, request.getTarget());
+
+        return new EtlJob(request.getId(), extractorConfig, transformerConfig, loaderConfig);
     }
 
     /**
-     * Конвертирует EtlJob в JobResponse
+     * Create ExtractorConfig from old-style params
+     */
+    private ExtractorConfig createExtractorConfig(String type, Map<String, Object> params, String source) {
+        return switch (type) {
+            case "sql" -> {
+                String sqlQuery = source != null ? source : (String) params.get("sqlQuery");
+                Optional<String> partitionColumn = Optional.ofNullable((String) params.get("partitionColumn"));
+                int partitions = getIntParam(params, "partitions", 1);
+                Optional<String> keyColumn = Optional.ofNullable((String) params.get("keyColumn"));
+                int threads = getIntParam(params, "threads", 1);
+                int streamBatchSize = getIntParam(params, "streamBatchSize", 1000);
+
+                yield new JdbcExtractorConfig(sqlQuery, partitionColumn, partitions, keyColumn, threads, streamBatchSize);
+            }
+            case "kafka" -> {
+                String topic = source != null ? source : (String) params.get("topic");
+                long startTimestamp = getLongParam(params, "startTimestamp", 0L);
+                long endTimestamp = getLongParam(params, "endTimestamp", Long.MAX_VALUE);
+                String formatStr = (String) params.getOrDefault("format", "AVRO");
+                KafkaFormat format = KafkaFormat.valueOf(formatStr.toUpperCase());
+                int threads = getIntParam(params, "threads", 1);
+                int streamBatchSize = getIntParam(params, "streamBatchSize", 1000);
+
+                yield new KafkaExtractorConfig(topic, startTimestamp, endTimestamp, format, threads, streamBatchSize);
+            }
+            default -> throw new IllegalArgumentException("Unknown extractor type: " + type);
+        };
+    }
+
+    /**
+     * Create TransformerConfig from old-style params
+     */
+    private TransformerConfig createTransformerConfig(String type, Map<String, Object> params) {
+        return switch (type) {
+            case "noop" -> new NoopTransformerConfig();
+            case "avro" -> new AvroToRecordTransformerConfig();
+            case "record-to-avro" -> {
+                String avroSchemaSubject = (String) params.get("avroSchema");
+                if (avroSchemaSubject == null) {
+                    avroSchemaSubject = (String) params.get("avroSchemaSubject");
+                }
+                yield new RecordToAvroTransformerConfig(avroSchemaSubject);
+            }
+            default -> throw new IllegalArgumentException("Unknown transformer type: " + type);
+        };
+    }
+
+    /**
+     * Create LoaderConfig from old-style params
+     */
+    private LoaderConfig createLoaderConfig(String type, Map<String, Object> params, String target) {
+        return switch (type) {
+            case "jdbc" -> {
+                String targetTable = target != null ? target : (String) params.get("targetTable");
+                int streamBatchSize = getIntParam(params, "streamBatchSize", 1000);
+                yield new JdbcLoaderConfig(targetTable, streamBatchSize);
+            }
+            case "fast-sql" -> {
+                String targetTable = target != null ? target : (String) params.get("targetTable");
+                yield new FastSqlLoaderConfig(targetTable);
+            }
+            case "kafka" -> {
+                String topic = target != null ? target : (String) params.get("topic");
+                String formatStr = (String) params.getOrDefault("format", "AVRO");
+                KafkaFormat format = KafkaFormat.valueOf(formatStr.toUpperCase());
+                yield new KafkaLoaderConfig(topic, format);
+            }
+            default -> throw new IllegalArgumentException("Unknown loader type: " + type);
+        };
+    }
+
+    /**
+     * Convert EtlJob to JobResponse (bridge between new type-safe model and old DTO format)
      */
     private JobResponse toJobResponse(EtlJob job) {
+        Map<String, Object> params = new HashMap<>();
+
+        // Add extractor params
+        params.put("extractorType", job.extractorConfig().type());
+        addExtractorParams(params, job.extractorConfig());
+
+        // Add transformer params
+        params.put("transformerType", job.transformerConfig().type());
+        addTransformerParams(params, job.transformerConfig());
+
+        // Add loader params
+        params.put("loaderType", job.loaderConfig().type());
+        addLoaderParams(params, job.loaderConfig());
+
+        // Extract source and target for backward compatibility
+        String source = extractSource(job.extractorConfig());
+        String target = extractTarget(job.loaderConfig());
+
         return JobResponse.builder()
-                .id(job.getJobId())
-                .source(job.getSource())
-                .target(job.getTargetTable())
-                .params(job.getParameters())
+                .id(job.jobId())
+                .source(source)
+                .target(target)
+                .params(params)
                 .build();
+    }
+
+    private void addExtractorParams(Map<String, Object> params, ExtractorConfig config) {
+        switch (config) {
+            case JdbcExtractorConfig jdbc -> {
+                params.put("sqlQuery", jdbc.sqlQuery());
+                jdbc.partitionColumn().ifPresent(pc -> params.put("partitionColumn", pc));
+                params.put("partitions", jdbc.partitions());
+                jdbc.keyColumn().ifPresent(kc -> params.put("keyColumn", kc));
+                params.put("threads", jdbc.threads());
+                params.put("streamBatchSize", jdbc.streamBatchSize());
+            }
+            case KafkaExtractorConfig kafka -> {
+                params.put("topic", kafka.topic());
+                params.put("startTimestamp", kafka.startTimestamp());
+                params.put("endTimestamp", kafka.endTimestamp());
+                params.put("format", kafka.format().name());
+                params.put("threads", kafka.threads());
+                params.put("streamBatchSize", kafka.streamBatchSize());
+            }
+        }
+    }
+
+    private void addTransformerParams(Map<String, Object> params, TransformerConfig config) {
+        switch (config) {
+            case NoopTransformerConfig noop -> {
+                // No additional params
+            }
+            case AvroToRecordTransformerConfig avro -> {
+                // No additional params
+            }
+            case RecordToAvroTransformerConfig recordToAvro -> {
+                params.put("avroSchemaSubject", recordToAvro.avroSchemaSubject());
+            }
+        }
+    }
+
+    private void addLoaderParams(Map<String, Object> params, LoaderConfig config) {
+        switch (config) {
+            case JdbcLoaderConfig jdbc -> {
+                params.put("targetTable", jdbc.targetTable());
+                params.put("streamBatchSize", jdbc.streamBatchSize());
+            }
+            case FastSqlLoaderConfig fastSql -> {
+                params.put("targetTable", fastSql.targetTable());
+            }
+            case KafkaLoaderConfig kafka -> {
+                params.put("topic", kafka.topic());
+                params.put("format", kafka.format().name());
+            }
+        }
+    }
+
+    private String extractSource(ExtractorConfig config) {
+        return switch (config) {
+            case JdbcExtractorConfig jdbc -> jdbc.sqlQuery();
+            case KafkaExtractorConfig kafka -> kafka.topic();
+        };
+    }
+
+    private String extractTarget(LoaderConfig config) {
+        return switch (config) {
+            case JdbcLoaderConfig jdbc -> jdbc.targetTable();
+            case FastSqlLoaderConfig fastSql -> fastSql.targetTable();
+            case KafkaLoaderConfig kafka -> kafka.topic();
+        };
+    }
+
+    private int getIntParam(Map<String, Object> params, String key, int defaultValue) {
+        Object value = params.get(key);
+        if (value == null) return defaultValue;
+        if (value instanceof Number) return ((Number) value).intValue();
+        return Integer.parseInt(value.toString());
+    }
+
+    private long getLongParam(Map<String, Object> params, String key, long defaultValue) {
+        Object value = params.get(key);
+        if (value == null) return defaultValue;
+        if (value instanceof Number) return ((Number) value).longValue();
+        return Long.parseLong(value.toString());
     }
 }

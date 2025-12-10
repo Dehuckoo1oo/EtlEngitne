@@ -1,15 +1,13 @@
-package ru.pospelov.etl.engine.steps.extractor;
+package ru.pospelov.etl.engine.steps.extractor.jdbc;
 
 import lombok.RequiredArgsConstructor;
-import org.apache.avro.Schema;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import ru.pospelov.etl.engine.config.extractor.JdbcExtractorConfig;
 import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
 import ru.pospelov.etl.engine.exception.EtlException;
 import ru.pospelov.etl.engine.exception.ExtractionException;
-import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
-import ru.pospelov.etl.engine.schema.SchemaRegistryService;
 
 import java.util.*;
 import java.util.concurrent.ExecutionException;
@@ -21,80 +19,68 @@ import java.util.function.Consumer;
 
 @Component
 @RequiredArgsConstructor
-public class JdbcExtractor implements Extractor {
+public class JdbcExtractor {
 
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(JdbcExtractor.class);
 
     private final JdbcTemplate jdbcTemplate;
-    private final SchemaRegistryService schemaRegistryService;
 
-    @Override
-    public String getType() {
-        return "sql";
-    }
+    /**
+     * Extract data from JDBC source using type-safe configuration.
+     * All parameters are type-safe and NOT NULL (except Optional).
+     * NO getParamOrDefault - everything is explicitly specified by user.
+     */
+    public void extract(
+            JdbcExtractorConfig config,
+            String jobId,
+            Consumer<Collection<EtlRecord>> batchConsumer
+    ) {
+        // Type-safe field access
+        String query = config.sqlQuery();
+        int threads = config.threads();
+        int streamBatchSize = config.streamBatchSize();
+        int partitions = config.partitions();
 
-    @Override
-    public void extract(EtlJob job, Consumer<Collection<EtlRecord>> batchConsumer) {
-        String query = job.getSource();
-        if (query == null) {
-            query = Objects.toString(job.getParam("query"), "");
-        }
-        if (query.isBlank()) {
-            throw new ExtractionException("Source query is required for JdbcExtractor", job.getJobId());
-        }
+        // Optional - explicit nullable handling
+        Optional<String> partitionColumn = config.partitionColumn();
+        Optional<String> keyColumn = config.keyColumn();
 
-        int streamBatchSize = (int) job.getParamOrDefault("streamBatchSize", 50000);
-        int threadCount = (int) job.getParamOrDefault("threads", 4);
-        int partitionCount = (int) job.getParamOrDefault("partitions", 1);
-        String partitionColumn = Objects.toString(job.getParam("partitionColumn"), "");
-        String schemaStr = (String) job.getParam("avroSchema");
-        String keyColumn = Objects.toString(job.getParamOrDefault("keyColumn", ""), "");
+        log.info("Job '{}' extraction started: query={}, threads={}, batchSize={}, partitions={}",
+                jobId, query, threads, streamBatchSize, partitions);
 
-        log.info("Job '{}' extraction started: batchSize={}, threads={}, partitions={}",
-                job.getJobId(), streamBatchSize, threadCount, partitionCount);
-
-        Schema avroSchema = null;
-        if (schemaStr != null) {
-            if (schemaStr.trim().startsWith("{")) {
-                avroSchema = new Schema.Parser().parse(schemaStr);
-            } else {
-                try {
-                    avroSchema = schemaRegistryService.getLatestSchema(schemaStr);
-                } catch (Exception e) {
-                    throw new ExtractionException("Failed to fetch schema from Schema Registry for subject: " + schemaStr, job.getJobId(), e);
-                }
-            }
-        }
-
-        final Map<String, String> avroFieldLookup = buildAvroFieldLookup(avroSchema);
-        final ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        final ExecutorService executor = Executors.newFixedThreadPool(threads);
         final List<Future<?>> tasks = new ArrayList<>();
 
         try {
-            if (!partitionColumn.isEmpty() && partitionCount > 1) {
+            // Partitioning only if partition column is specified
+            if (partitionColumn.isPresent() && partitions > 1) {
                 log.info("Job '{}' using partition-based extraction: column={}, partitions={}",
-                        job.getJobId(), partitionColumn, partitionCount);
-                for (int p = 0; p < partitionCount; p++) {
-                    final String partQuery = query +
+                        jobId, partitionColumn.get(), partitions);
+
+                for (int p = 0; p < partitions; p++) {
+                    String partQuery = query +
                             (query.toLowerCase().contains("where") ? " AND " : " WHERE ") +
-                            partitionColumn + " = " + p;
+                            partitionColumn.get() + " = " + p;
 
                     tasks.add(executor.submit(new JdbcPartitionQueryTask(
                             jdbcTemplate,
                             partQuery,
                             p,
                             streamBatchSize,
-                            avroSchema,
-                            avroFieldLookup,
-                            keyColumn,
+                            keyColumn.orElse(""),
                             batchConsumer
                     )));
                 }
             } else {
-                Integer totalRows = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM (" + query + ") t", Integer.class);
-                final int total = (totalRows == null) ? 0 : totalRows;
+                // Offset-based extraction
+                Integer totalRows = jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM (" + query + ") t",
+                        Integer.class
+                );
+                int total = (totalRows == null) ? 0 : totalRows;
+
                 log.info("Job '{}' using offset-based extraction: totalRows={}, tasks={}",
-                        job.getJobId(), total, (total + streamBatchSize - 1) / streamBatchSize);
+                        jobId, total, (total + streamBatchSize - 1) / streamBatchSize);
 
                 for (int offset = 0; offset < total; offset += streamBatchSize) {
                     tasks.add(executor.submit(new JdbcOffsetQueryTask(
@@ -102,45 +88,31 @@ public class JdbcExtractor implements Extractor {
                             query,
                             offset,
                             streamBatchSize,
-                            avroSchema,
-                            avroFieldLookup,
-                            keyColumn,
+                            keyColumn.orElse(""),
                             batchConsumer
                     )));
                 }
             }
 
-            waitForTasks(tasks, job.getJobId());
+            waitForTasks(tasks, jobId);
             executor.shutdown();
             if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
-                throw new ExtractionException("JdbcExtractor did not finish within timeout", job.getJobId());
+                throw new ExtractionException("JdbcExtractor did not finish within timeout", jobId);
             }
-            log.info("Job '{}' extraction completed: {} tasks finished", job.getJobId(), tasks.size());
+            log.info("Job '{}' extraction completed: {} tasks finished", jobId, tasks.size());
         } catch (EtlException e) {
-            log.error("Job '{}' extraction failed: {}", job.getJobId(), e.getMessage());
+            log.error("Job '{}' extraction failed: {}", jobId, e.getMessage());
             throw e;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.error("Job '{}' extraction interrupted", job.getJobId());
-            throw new ExtractionException("JdbcExtractor interrupted", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
+            log.error("Job '{}' extraction interrupted", jobId);
+            throw new ExtractionException("JdbcExtractor interrupted", jobId, null, EtlErrorSeverity.CRITICAL, e);
         } catch (Exception e) {
-            log.error("Job '{}' extraction error: {}", job.getJobId(), e.getMessage(), e);
-            throw new ExtractionException("JdbcExtractor failed", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
+            log.error("Job '{}' extraction error: {}", jobId, e.getMessage(), e);
+            throw new ExtractionException("JdbcExtractor failed", jobId, null, EtlErrorSeverity.CRITICAL, e);
         } finally {
             executor.shutdownNow();
         }
-    }
-
-    private static Map<String, String> buildAvroFieldLookup(Schema avroSchema) {
-        if (avroSchema == null) {
-            return Collections.emptyMap();
-        }
-        Map<String, String> lookup = new HashMap<>();
-        for (Schema.Field field : avroSchema.getFields()) {
-            lookup.put(field.name(), field.name());
-            lookup.put(field.name().toLowerCase(Locale.ROOT), field.name());
-        }
-        return Collections.unmodifiableMap(lookup);
     }
 
     private static void waitForTasks(List<Future<?>> tasks, String jobId) {

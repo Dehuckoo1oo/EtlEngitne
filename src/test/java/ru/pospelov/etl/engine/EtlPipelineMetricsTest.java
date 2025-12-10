@@ -1,13 +1,13 @@
 package ru.pospelov.etl.engine;
 
 import org.junit.jupiter.api.Test;
-import ru.pospelov.etl.engine.engine.DeadLetterQueue;
-import ru.pospelov.etl.engine.engine.EtlComponentRegistry;
+import ru.pospelov.etl.engine.config.extractor.JdbcExtractorConfig;
+import ru.pospelov.etl.engine.config.loader.JdbcLoaderConfig;
+import ru.pospelov.etl.engine.config.transformer.NoopTransformerConfig;
+import ru.pospelov.etl.engine.engine.EtlComponentFactory;
 import ru.pospelov.etl.engine.engine.EtlPipeline;
 import ru.pospelov.etl.engine.engine.EtlPipelineFactory;
 import ru.pospelov.etl.engine.engine.InMemoryDeadLetterQueue;
-import ru.pospelov.etl.engine.validation.JobValidator;
-import ru.pospelov.etl.engine.validation.ValidationResult;
 import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
 import ru.pospelov.etl.engine.exception.EtlException;
 import ru.pospelov.etl.engine.exception.TransformationException;
@@ -17,19 +17,22 @@ import ru.pospelov.etl.engine.metrics.EtlMetrics;
 import ru.pospelov.etl.engine.metrics.EtlMetricsCollector;
 import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
-import ru.pospelov.etl.engine.steps.extractor.Extractor;
-import ru.pospelov.etl.engine.steps.loader.Loader;
-import ru.pospelov.etl.engine.steps.transformer.Transformer;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.Optional;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class EtlPipelineMetricsTest {
 
@@ -39,36 +42,36 @@ class EtlPipelineMetricsTest {
         RecordingMetricsListener listener = new RecordingMetricsListener();
         collector.registerListener(listener);
 
-        EtlPipeline pipeline = createPipeline(
-                new InMemoryDeadLetterQueue(),
-                new FixedExtractor(),
-                new PassThroughTransformer(),
-                new RecordingLoader(),
-                collector
-        );
+        InMemoryDeadLetterQueue deadLetterQueue = new InMemoryDeadLetterQueue();
+        EtlComponentFactory componentFactory = mock(EtlComponentFactory.class);
 
-        EtlJob job = createJob("metrics-success", "fixed-extractor", "pass-transformer", "recording-loader");
+        EtlJob job = createJob("metrics-success");
+        EtlRecord first = new EtlRecord(Instant.now(), "test", 1L);
+        EtlRecord second = new EtlRecord(Instant.now(), "test", 2L);
+
+        doAnswer(invocation -> {
+            Consumer<Collection<EtlRecord>> consumer = invocation.getArgument(1);
+            consumer.accept(List.of(first, second));
+            return null;
+        }).when(componentFactory).extract(eq(job), any());
+
+        when(componentFactory.transform(eq(job), any()))
+                .thenAnswer(invocation -> invocation.<Collection<EtlRecord>>getArgument(1));
+        doNothing().when(componentFactory).load(eq(job), any());
+
+        EtlPipeline pipeline = new EtlPipelineFactory(componentFactory, deadLetterQueue, collector).createStreamingEtlPipeline();
         pipeline.run(job);
 
-        EtlJobMetricsSnapshot snapshot = collector.getSnapshot(job.getJobId()).orElseThrow();
+        EtlJobMetricsSnapshot snapshot = collector.getSnapshot(job.jobId()).orElseThrow();
         assertThat(snapshot.status()).isEqualTo(EtlJobStatus.COMPLETED);
         assertThat(snapshot.extractedRecords()).isEqualTo(2);
         assertThat(snapshot.transformedRecords()).isEqualTo(2);
         assertThat(snapshot.loadedRecords()).isEqualTo(2);
-        // processedRecords больше не учитывается (убрали onRecordProcessed для производительности)
-        // assertThat(snapshot.processedRecords()).isEqualTo(2);
         assertThat(snapshot.errorCount()).isZero();
+        assertThat(deadLetterQueue.getEntries(job.jobId())).isEmpty();
 
         assertThat(listener.statuses())
-                .containsExactly(
-                        EtlJobStatus.RUNNING,
-                        EtlJobStatus.EXTRACTING,
-                        EtlJobStatus.TRANSFORMING,
-                        EtlJobStatus.LOADING,
-                        EtlJobStatus.COMPLETED
-                );
-        // processedRecords больше не отслеживается
-        // assertThat(listener.processedRecords()).isEqualTo(2);
+                .containsExactly(EtlJobStatus.RUNNING, EtlJobStatus.COMPLETED);
         assertThat(listener.errorCount()).isZero();
     }
 
@@ -78,117 +81,56 @@ class EtlPipelineMetricsTest {
         RecordingMetricsListener listener = new RecordingMetricsListener();
         collector.registerListener(listener);
 
-        EtlPipeline pipeline = createPipeline(
-                new InMemoryDeadLetterQueue(),
-                new FixedExtractor(),
-                new FailingTransformer(),
-                new RecordingLoader(),
-                collector
-        );
+        InMemoryDeadLetterQueue deadLetterQueue = new InMemoryDeadLetterQueue();
+        EtlComponentFactory componentFactory = mock(EtlComponentFactory.class);
 
-        EtlJob job = createJob("metrics-failure", "fixed-extractor", "failing-transformer", "recording-loader");
+        EtlJob job = createJob("metrics-failure");
+        EtlRecord first = new EtlRecord(Instant.now(), "test", 1L);
+        EtlRecord second = new EtlRecord(Instant.now(), "test", 2L);
+
+        doAnswer(invocation -> {
+            Consumer<Collection<EtlRecord>> consumer = invocation.getArgument(1);
+            consumer.accept(List.of(first, second));
+            return null;
+        }).when(componentFactory).extract(eq(job), any());
+
+        when(componentFactory.transform(eq(job), any()))
+                .thenThrow(new TransformationException("boom", job.jobId(), second, EtlErrorSeverity.CRITICAL));
+        doNothing().when(componentFactory).load(eq(job), any());
+
+        EtlPipeline pipeline = new EtlPipelineFactory(componentFactory, deadLetterQueue, collector).createStreamingEtlPipeline();
 
         assertThatThrownBy(() -> pipeline.run(job))
                 .isInstanceOf(TransformationException.class)
                 .hasMessageContaining("boom");
 
-        EtlJobMetricsSnapshot snapshot = collector.getSnapshot(job.getJobId()).orElseThrow();
+        EtlJobMetricsSnapshot snapshot = collector.getSnapshot(job.jobId()).orElseThrow();
         assertThat(snapshot.status()).isEqualTo(EtlJobStatus.FAILED);
-        // Записи были извлечены до того как трансформация упала
         assertThat(snapshot.extractedRecords()).isEqualTo(2);
         assertThat(snapshot.errorCount()).isEqualTo(1);
+        assertThat(deadLetterQueue.getEntries(job.jobId())).hasSize(1);
 
         assertThat(listener.statuses())
-                .containsExactly(
-                        EtlJobStatus.RUNNING,
-                        EtlJobStatus.EXTRACTING,
-                        EtlJobStatus.TRANSFORMING,
-                        EtlJobStatus.FAILED
-                );
+                .containsExactly(EtlJobStatus.RUNNING, EtlJobStatus.FAILED);
         assertThat(listener.errorCount()).isEqualTo(1);
     }
 
-    private EtlPipeline createPipeline(
-            DeadLetterQueue deadLetterQueue,
-            Extractor extractor,
-            Transformer transformer,
-            Loader loader,
-            EtlMetricsCollector collector
-    ) {
-        EtlComponentRegistry registry = new EtlComponentRegistry(
-                List.of(extractor),
-                List.of(transformer),
-                List.of(loader)
+    private EtlJob createJob(String jobId) {
+        JdbcExtractorConfig extractorConfig = new JdbcExtractorConfig(
+                "SELECT 1",
+                Optional.empty(),
+                1,
+                Optional.empty(),
+                1,
+                1_000
         );
-        JobValidator jobValidator = job -> new ValidationResult();
-        EtlPipelineFactory factory = new EtlPipelineFactory(registry, deadLetterQueue, collector, jobValidator);
-        EtlJob templateJob = createJob("template", extractor.getType(), transformer.getType(), loader.getType());
-        return factory.create(templateJob);
-    }
-
-    private EtlJob createJob(String jobId, String extractorType, String transformerType, String loaderType) {
-        Map<String, Object> params = new HashMap<>();
-        params.put("extractorType", extractorType);
-        params.put("transformerType", transformerType);
-        params.put("loaderType", loaderType);
-        return new EtlJob(jobId, null, "target_table", params);
-    }
-
-    private static class FixedExtractor implements Extractor {
-        @Override
-        public void extract(EtlJob job, java.util.function.Consumer<Collection<EtlRecord>> batchConsumer) {
-            EtlRecord first = new EtlRecord(Instant.now(), "test", 1L);
-            EtlRecord second = new EtlRecord(Instant.now(), "test", 2L);
-            batchConsumer.accept(List.of(first, second));
-        }
-
-        @Override
-        public String getType() {
-            return "fixed-extractor";
-        }
-    }
-
-    private static class PassThroughTransformer implements Transformer {
-        @Override
-        public Collection<EtlRecord> transform(Collection<EtlRecord> etlRecords, EtlJob job) {
-            return etlRecords;
-        }
-
-        @Override
-        public String getType() {
-            return "pass-transformer";
-        }
-    }
-
-    private static class FailingTransformer implements Transformer {
-        @Override
-        public Collection<EtlRecord> transform(Collection<EtlRecord> etlRecords, EtlJob job) {
-            throw new TransformationException("boom", job.getJobId(), null, EtlErrorSeverity.CRITICAL);
-        }
-
-        @Override
-        public String getType() {
-            return "failing-transformer";
-        }
-    }
-
-    private static class RecordingLoader implements Loader {
-        private final List<EtlRecord> loadedRecords = new ArrayList<>();
-
-        @Override
-        public void load(Collection<EtlRecord> etlRecords, EtlJob job) {
-            loadedRecords.addAll(etlRecords);
-        }
-
-        @Override
-        public String getType() {
-            return "recording-loader";
-        }
+        NoopTransformerConfig transformerConfig = new NoopTransformerConfig();
+        JdbcLoaderConfig loaderConfig = new JdbcLoaderConfig("target_table", 1_000);
+        return new EtlJob(jobId, extractorConfig, transformerConfig, loaderConfig);
     }
 
     private static final class RecordingMetricsListener implements EtlMetrics {
         private final List<EtlJobStatus> statuses = new ArrayList<>();
-        private int processedRecords;
         private int errorCount;
 
         @Override
@@ -228,7 +170,7 @@ class EtlPipelineMetricsTest {
 
         @Override
         public void onRecordProcessed(EtlJob job, EtlRecord record) {
-            processedRecords++;
+            // not used in these tests
         }
 
         @Override
@@ -240,14 +182,9 @@ class EtlPipelineMetricsTest {
             return statuses;
         }
 
-        int processedRecords() {
-            return processedRecords;
-        }
-
         int errorCount() {
             return errorCount;
         }
     }
 
 }
-

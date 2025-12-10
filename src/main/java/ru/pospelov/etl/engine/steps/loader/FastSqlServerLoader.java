@@ -6,10 +6,10 @@ import com.microsoft.sqlserver.jdbc.SQLServerConnection;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import ru.pospelov.etl.engine.config.loader.FastSqlLoaderConfig;
 import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
 import ru.pospelov.etl.engine.exception.LoadingException;
 import ru.pospelov.etl.engine.model.EtlBulkRecord;
-import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
 
 import javax.sql.DataSource;
@@ -24,30 +24,27 @@ import java.util.List;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class FastSqlServerLoader implements Loader {
+public class FastSqlServerLoader {
 
     private final DataSource dataSource;
 
-    @Override
-    public String getType() {
-        return "fast-sql";
-    }
-
-    @Override
-    public void load(Collection<EtlRecord> records, EtlJob job) {
+    /**
+     * Load data to SQL Server using fast bulk copy with type-safe configuration.
+     */
+    public void load(FastSqlLoaderConfig config, String jobId, Collection<EtlRecord> records) {
         if (records.isEmpty()) return;
 
-        String targetTable = job.getTargetTable();
+        String targetTable = config.targetTable();
         List<EtlRecord> batch = records instanceof List ? (List<EtlRecord>) records : new ArrayList<>(records);
         Instant start = Instant.now();
 
         try {
-            bulkInsertBatch(targetTable, batch, job.getJobId());
+            bulkInsertBatch(targetTable, batch, jobId);
             log.debug("Inserted {} rows into '{}'", batch.size(), targetTable);
         } catch (Exception e) {
             throw new LoadingException(
                     "Bulk insert failed",
-                    job.getJobId(),
+                    jobId,
                     batch.isEmpty() ? null : batch.get(0),
                     EtlErrorSeverity.CRITICAL,
                     e

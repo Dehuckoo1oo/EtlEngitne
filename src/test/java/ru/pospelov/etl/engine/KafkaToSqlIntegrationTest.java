@@ -4,36 +4,37 @@ import com.microsoft.sqlserver.jdbc.SQLServerBulkCopy;
 import com.microsoft.sqlserver.jdbc.SQLServerBulkCopyOptions;
 import com.microsoft.sqlserver.jdbc.SQLServerConnection;
 import lombok.SneakyThrows;
-import org.apache.avro.Schema;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
+import ru.pospelov.etl.engine.config.KafkaFormat;
+import ru.pospelov.etl.engine.config.extractor.JdbcExtractorConfig;
+import ru.pospelov.etl.engine.config.extractor.KafkaExtractorConfig;
+import ru.pospelov.etl.engine.config.loader.FastSqlLoaderConfig;
+import ru.pospelov.etl.engine.config.loader.KafkaLoaderConfig;
+import ru.pospelov.etl.engine.config.transformer.AvroToRecordTransformerConfig;
+import ru.pospelov.etl.engine.config.transformer.RecordToAvroTransformerConfig;
 import ru.pospelov.etl.engine.engine.EtlPipelineFactory;
 import ru.pospelov.etl.engine.model.EtlBulkRecord;
 import ru.pospelov.etl.engine.model.EtlJob;
-import ru.pospelov.etl.engine.config.KafkaClientFactory;
 import ru.pospelov.etl.engine.model.EtlRecord;
 
 import javax.sql.DataSource;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.sql.Connection;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 @TestPropertySource(properties = {
-    "spring.flyway.enabled=false",
-    "spring.jpa.hibernate.ddl-auto=none"
+        "spring.flyway.enabled=false",
+        "spring.jpa.hibernate.ddl-auto=none"
 })
 public class KafkaToSqlIntegrationTest {
 
@@ -41,25 +42,22 @@ public class KafkaToSqlIntegrationTest {
     private EtlPipelineFactory pipelineFactory;
 
     @Autowired
-    private KafkaClientFactory kafkaClientFactory;
-
-    @Autowired
     private JdbcTemplate jdbcTemplate;
 
     /**
      * Оптимизированная версия теста sqlTableToKafka_shouldTransferMillionRows.
-     * 
+     * <p>
      * Подготовка данных:
      * 1. Создает временную таблицу БЕЗ партиционирования (быстрее заполняется)
      * 2. Генерирует данные в памяти как EtlRecord
      * 3. Загружает данные во временную таблицу через SQL Server Bulk Copy API (намного быстрее чем batch INSERT)
      * 4. Копирует данные из временной таблицы в целевую партиционированную таблицу через INSERT ... SELECT
-     * 
+     * <p>
      * Streaming ETL обработка (новая архитектура):
      * 5. Использует батчевую обработку (streamBatchSize) для экономии памяти
      * 6. Данные обрабатываются порциями: extract batch → transform → load → next batch
      * 7. Вместо 2M записей в памяти одновременно - только текущий батч от каждого потока
-     * 
+     * <p>
      * Этот подход позволяет загрузить 2 000 000 строк за несколько секунд с минимальным потреблением памяти.
      */
     @Test
@@ -190,9 +188,7 @@ public class KafkaToSqlIntegrationTest {
         List<EtlRecord> records = new ArrayList<>(1_000_000);
         Instant now = Instant.now();
         for (int i = 1; i <= 1_000_000; i++) {
-            EtlRecord record = new EtlRecord(
-                    now, "test", i
-            );
+            EtlRecord record = new EtlRecord(now, "test", i);
             record.put("order_id", "ORD-" + i);
             record.put("customer_id", "CUST");
             record.put("order_date", "2025-06-09");
@@ -259,7 +255,7 @@ public class KafkaToSqlIntegrationTest {
         Instant loadEnd = Instant.now();
         long loadDurationSeconds = Duration.between(loadStart, loadEnd).toSeconds();
         long loadRowsPerSecond = loadDurationSeconds > 0 ? records.size() / loadDurationSeconds : records.size();
-        System.out.println("✅ Загрузка во временную таблицу завершена за " + loadDurationSeconds + 
+        System.out.println("✅ Загрузка во временную таблицу завершена за " + loadDurationSeconds +
                 " секунд (" + String.format("%,d", loadRowsPerSecond) + " строк/сек)");
 
         // Копируем данные из временной таблицы в целевую партиционированную таблицу
@@ -281,7 +277,7 @@ public class KafkaToSqlIntegrationTest {
         Instant copyEnd = Instant.now();
         long copyDurationSeconds = Duration.between(copyStart, copyEnd).toSeconds();
         long copyRowsPerSecond = copyDurationSeconds > 0 ? records.size() / copyDurationSeconds : records.size();
-        System.out.println("✅ Копирование в партиционированную таблицу завершено за " + copyDurationSeconds + 
+        System.out.println("✅ Копирование в партиционированную таблицу завершено за " + copyDurationSeconds +
                 " секунд (" + String.format("%,d", copyRowsPerSecond) + " строк/сек)");
 
         // Удаляем временную таблицу
@@ -292,89 +288,76 @@ public class KafkaToSqlIntegrationTest {
         assertThat(count).isEqualTo(1_000_000);
         System.out.println("✅ Проверка: загружено " + count + " записей");
 
-        // Продолжаем с тестом передачи в Kafka
-        Schema schema = null;
-        try {
-            schema = fetchSchemaFromRegistry("order-events-value");
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        // Создаем type-safe конфигурацию для SQL → Kafka
+        JdbcExtractorConfig extractorConfig = new JdbcExtractorConfig(
+                "SELECT * FROM SUPPORT.dbo.order_src",
+                Optional.of("bucket"),  // partitionColumn
+                72,                      // partitions
+                Optional.of("order_id"), // keyColumn
+                8,                       // threads
+                100_000                  // streamBatchSize
+        );
+
+        RecordToAvroTransformerConfig transformerConfig = new RecordToAvroTransformerConfig("order-events-value-value");
+
+        KafkaLoaderConfig loaderConfig = new KafkaLoaderConfig(
+                "order-events-value",    // topic
+                KafkaFormat.AVRO        // format
+        );
 
         EtlJob toKafka = new EtlJob(
                 "sql-to-kafka",
-                "SELECT * FROM SUPPORT.dbo.order_src",
-                null,
-                Map.ofEntries(
-                        Map.entry("extractorType", "sql"),
-                        Map.entry("loaderType", "kafka"),
-                        Map.entry("transformerType", "noop"),
-                        Map.entry("topic", "order-events-value"),
-                        Map.entry("format", "avro"),
-                        Map.entry("threads", 8),
-                        // Streaming batch size - размер батча для потоковой обработки
-                        // Вместо загрузки всех 2M записей в память, обрабатываются батчами по 100K
-                        Map.entry("streamBatchSize", 100_000),
-                        Map.entry("avroSchema", schema.toString()),
-                        Map.entry("keyColumn", "order_id"),
-                        // Партиционирование SQL: каждый поток обрабатывает свои партиции
-                        Map.entry("partitionColumn", "bucket"),
-                        Map.entry("partitions", 72)
-                )
+                extractorConfig,
+                transformerConfig,
+                loaderConfig
         );
 
         // Замер времени загрузки в Kafka
         System.out.println("Начало загрузки данных в Kafka...");
         Instant kafkaStart = Instant.now();
-        pipelineFactory.create(toKafka).run(toKafka);
+        pipelineFactory.createStreamingEtlPipeline().run(toKafka);
         Instant kafkaEnd = Instant.now();
         long kafkaDurationSeconds = Duration.between(kafkaStart, kafkaEnd).toSeconds();
         long kafkaRowsPerSecond = kafkaDurationSeconds > 0 ? count / kafkaDurationSeconds : count;
-        System.out.println("✅ Загрузка в Kafka завершена за " + kafkaDurationSeconds + 
+        System.out.println("✅ Загрузка в Kafka завершена за " + kafkaDurationSeconds +
                 " секунд (" + String.format("%,d", kafkaRowsPerSecond) + " строк/сек)");
+
+        // Создаем type-safe конфигурацию для Kafka → SQL
+        KafkaExtractorConfig kafkaExtractorConfig = new KafkaExtractorConfig(
+                "order-events-value",    // topic
+                kafkaStart.minusSeconds(60).toEpochMilli(), // startTimestamp - начинаем немного раньше
+                kafkaEnd.plusSeconds(60).toEpochMilli(),    // endTimestamp - заканчиваем немного позже
+                KafkaFormat.AVRO,        // format
+                8,                       // threads
+                100_000                  // streamBatchSize
+        );
+
+        AvroToRecordTransformerConfig avroTransformerConfig = new AvroToRecordTransformerConfig();
+
+        FastSqlLoaderConfig fastSqlLoaderConfig = new FastSqlLoaderConfig(
+                "SUPPORT.dbo.order_dst" // targetTable
+        );
+
+        EtlJob fromKafka = new EtlJob(
+                "kafka-to-sql",
+                kafkaExtractorConfig,
+                avroTransformerConfig,
+                fastSqlLoaderConfig
+        );
 
         // Обратная загрузка из Kafka в order_dst
         System.out.println("Начало загрузки данных из Kafka в order_dst...");
         Instant kafkaToSqlStart = Instant.now();
-        EtlJob fromKafka = new EtlJob(
-                "kafka-to-sql",
-                null,
-                "SUPPORT.dbo.order_dst",
-                Map.of(
-                        "extractorType", "kafka",
-                        "format", "avro",
-                        "transformerType", "avro",
-                        "loaderType", "fast-sql",
-                        "topic", "order-events-value",
-                        "startTimestamp", kafkaStart.minusSeconds(60).toEpochMilli(), // Начинаем немного раньше для надежности
-                        "endTimestamp", kafkaEnd.plusSeconds(60).toEpochMilli(),     // Заканчиваем немного позже для надежности
-                        // Streaming batch size - единый размер батча для всей обработки
-                        "streamBatchSize", 100_000,
-                        "threads", 8
-                )
-        );
-        pipelineFactory.create(fromKafka).run(fromKafka);
+        pipelineFactory.createStreamingEtlPipeline().run(fromKafka);
         Instant kafkaToSqlEnd = Instant.now();
         long kafkaToSqlDurationSeconds = Duration.between(kafkaToSqlStart, kafkaToSqlEnd).toSeconds();
-        
+
         // Проверяем количество загруженных записей
         Integer dstCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM SUPPORT.dbo.order_dst", Integer.class);
         long kafkaToSqlRowsPerSecond = kafkaToSqlDurationSeconds > 0 ? dstCount / kafkaToSqlDurationSeconds : dstCount;
-        System.out.println("✅ Загрузка из Kafka в order_dst завершена за " + kafkaToSqlDurationSeconds + 
+        System.out.println("✅ Загрузка из Kafka в order_dst завершена за " + kafkaToSqlDurationSeconds +
                 " секунд (" + String.format("%,d", kafkaToSqlRowsPerSecond) + " строк/сек)");
         System.out.println("✅ Проверка: загружено " + dstCount + " записей в order_dst");
         assertThat(dstCount).isEqualTo(count);
-    }
-
-    private Schema fetchSchemaFromRegistry(String subject) throws Exception {
-        String url = "http://localhost:8081/subjects/" + subject + "/versions/latest";
-        HttpClient client = HttpClient.newHttpClient();
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("Accept", "application/vnd.schemaregistry.v1+json")
-                .build();
-
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-        String rawSchema = com.jayway.jsonpath.JsonPath.read(response.body(), "$.schema");
-        return new Schema.Parser().parse(rawSchema);
     }
 }

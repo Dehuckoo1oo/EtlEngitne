@@ -55,15 +55,21 @@
                             <!-- Source (SQL query or Kafka topic) -->
                             <td>
                                 <span class="text-truncate-custom"
-                                      th:text="${job.source != null ? job.source : 'N/A'}"
-                                      th:title="${job.source}">
+                                      th:with="sourceDisplay=${job.source != null and job.source != '' ? job.source :
+                                                              (job.params['topic'] != null and job.params['extractorType'] == 'kafka' ? job.params['topic'] : 'N/A')}"
+                                      th:text="${sourceDisplay}"
+                                      th:title="${sourceDisplay}">
                                     SELECT * FROM table
                                 </span>
                             </td>
 
                             <!-- Target -->
                             <td>
-                                <span th:text="${job.target != null ? job.target : 'N/A'}">target_table</span>
+                                <span th:with="targetDisplay=${job.target != null and job.target != '' ? job.target :
+                                                              (job.params['topic'] != null and job.params['loaderType'] == 'kafka' ? job.params['topic'] : 'N/A')}"
+                                      th:text="${targetDisplay}">
+                                    target_table
+                                </span>
                             </td>
 
                             <!-- Status Badge -->

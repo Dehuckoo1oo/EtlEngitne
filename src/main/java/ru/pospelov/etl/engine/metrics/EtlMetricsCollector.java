@@ -15,8 +15,6 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -83,8 +81,6 @@ public class EtlMetricsCollector implements EtlMetrics {
     @Override
     public void onExtractComplete(EtlJob job, int extractedRecords, long durationMillis) {
         MutableJobMetrics metrics = getOrCreate(job);
-        // ОПТИМИЗАЦИЯ: Используем System.currentTimeMillis() вместо Instant.now()
-        // для снижения overhead при частых вызовах
         metrics.updateExtract(extractedRecords, durationMillis);
         publish(listener -> listener.onExtractComplete(job, extractedRecords, durationMillis));
     }
@@ -129,7 +125,7 @@ public class EtlMetricsCollector implements EtlMetrics {
 
     private MutableJobMetrics getOrCreate(EtlJob job) {
         Objects.requireNonNull(job, "job must not be null");
-        String jobId = job.getJobId();
+        String jobId = job.jobId();
         if (jobId == null || jobId.isBlank()) {
             jobId = "unknown";
         }
@@ -149,158 +145,4 @@ public class EtlMetricsCollector implements EtlMetrics {
             }
         }
     }
-
-    private static final class MutableJobMetrics {
-        private final String jobId;
-        private final AtomicReference<EtlJobStatus> status = new AtomicReference<>(EtlJobStatus.PENDING);
-        // ОПТИМИЗАЦИЯ: Храним timestamp как long вместо Instant для снижения overhead
-        private final AtomicLong startedAtMillis = new AtomicLong(0);
-        private final AtomicLong lastUpdatedAtMillis = new AtomicLong(0);
-        private final AtomicLong completedAtMillis = new AtomicLong(0);  // Время завершения для расчета wall-clock time
-        private final AtomicLong extractedRecords = new AtomicLong(0);
-        private final AtomicLong processedRecords = new AtomicLong(0);
-        private final AtomicLong transformedRecords = new AtomicLong(0);
-        private final AtomicLong loadedRecords = new AtomicLong(0);
-        private final AtomicLong errorCount = new AtomicLong(0);
-        private final AtomicLong extractDurationMillis = new AtomicLong(0);
-        private final AtomicLong transformDurationMillis = new AtomicLong(0);
-        private final AtomicLong loadDurationMillis = new AtomicLong(0);
-
-        private MutableJobMetrics(String jobId) {
-            this.jobId = jobId;
-        }
-
-        private void updateStatus(EtlJobStatus newStatus, Instant timestamp) {
-            status.set(newStatus);
-            long nowMillis = timestamp.toEpochMilli();
-            if (newStatus != EtlJobStatus.PENDING) {
-                startedAtMillis.compareAndSet(0, nowMillis);
-            }
-            // Отслеживаем время завершения для расчета wall-clock time
-            if (newStatus == EtlJobStatus.COMPLETED || newStatus == EtlJobStatus.FAILED || newStatus == EtlJobStatus.CANCELLED) {
-                completedAtMillis.set(nowMillis);
-            }
-            lastUpdatedAtMillis.set(nowMillis);
-        }
-
-        private void updateExtract(long records, long durationMillis) {
-            // ОПТИМИЗАЦИЯ: Теперь принимаем абсолютные значения, не инкрементальные
-            // Это позволяет вызывать метод реже (каждые N батчей)
-            if (records > 0) {
-                extractedRecords.set(records);  // Устанавливаем абсолютное значение
-            }
-            if (durationMillis > 0) {
-                extractDurationMillis.set(durationMillis);
-            }
-            // Используем более легковесный способ обновления timestamp
-            lastUpdatedAtMillis.set(System.currentTimeMillis());
-        }
-
-        private void updateTransform(long records, long durationMillis) {
-            if (records > 0) {
-                transformedRecords.set(records);  // Абсолютное значение
-            }
-            if (durationMillis > 0) {
-                transformDurationMillis.set(durationMillis);  // Уже накопленное значение
-            }
-            lastUpdatedAtMillis.set(System.currentTimeMillis());
-        }
-
-        private void updateLoad(long records, long durationMillis) {
-            if (records > 0) {
-                loadedRecords.set(records);  // Абсолютное значение
-            }
-            if (durationMillis > 0) {
-                loadDurationMillis.set(durationMillis);  // Уже накопленное значение
-            }
-            lastUpdatedAtMillis.set(System.currentTimeMillis());
-        }
-
-        private void incrementProcessed() {
-            processedRecords.incrementAndGet();
-            lastUpdatedAtMillis.set(System.currentTimeMillis());
-        }
-
-        private void incrementErrors() {
-            errorCount.incrementAndGet();
-            lastUpdatedAtMillis.set(System.currentTimeMillis());
-        }
-
-        private EtlJobMetricsSnapshot toSnapshot() {
-            long startedMillis = startedAtMillis.get();
-            long updatedMillis = lastUpdatedAtMillis.get();
-            long completedMillis = completedAtMillis.get();
-
-            Instant started = startedMillis > 0 ? Instant.ofEpochMilli(startedMillis) : null;
-            Instant updated = updatedMillis > 0 ? Instant.ofEpochMilli(updatedMillis) : null;
-            Instant effectiveLastUpdated = updated != null ? updated : started;
-
-            // Вычисляем wall-clock time и throughput
-            long totalDuration = computeTotalDuration(startedMillis, completedMillis, updatedMillis);
-            double throughput = computeThroughput(totalDuration);
-
-            return new EtlJobMetricsSnapshot(
-                    jobId,
-                    status.get(),
-                    started,
-                    effectiveLastUpdated,
-                    extractedRecords.get(),
-                    processedRecords.get(),
-                    transformedRecords.get(),
-                    loadedRecords.get(),
-                    errorCount.get(),
-                    extractDurationMillis.get(),
-                    transformDurationMillis.get(),
-                    loadDurationMillis.get(),
-                    totalDuration,
-                    throughput
-            );
-        }
-
-        private EtlJobStatus status() {
-            return status.get();
-        }
-
-        /**
-         * Вычисляет реальное wall-clock время выполнения (от старта до завершения).
-         * Для streaming pipeline это корректный способ расчета времени,
-         * так как фазы extract/transform/load выполняются параллельно.
-         */
-        private long computeTotalDuration(long startedMillis, long completedMillis, long updatedMillis) {
-            if (startedMillis <= 0) {
-                return 0;
-            }
-
-            // Если джоб завершен (COMPLETED/FAILED/CANCELLED), используем время завершения
-            if (completedMillis > 0) {
-                return completedMillis - startedMillis;
-            }
-
-            // Если джоб ещё выполняется, используем текущее время
-            if (updatedMillis > 0) {
-                return updatedMillis - startedMillis;
-            }
-
-            return 0;
-        }
-
-        /**
-         * Вычисляет throughput на основе wall-clock времени.
-         */
-        private double computeThroughput(long totalDurationMillis) {
-            if (totalDurationMillis <= 0) {
-                return 0d;
-            }
-
-            double seconds = totalDurationMillis / 1000d;
-            long loaded = loadedRecords.get();
-
-            if (loaded <= 0) {
-                return 0d;
-            }
-
-            return loaded / seconds;
-        }
-    }
 }
-

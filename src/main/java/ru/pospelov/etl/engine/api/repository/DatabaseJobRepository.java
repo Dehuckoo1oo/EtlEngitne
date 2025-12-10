@@ -32,19 +32,19 @@ public class DatabaseJobRepository implements JobRepository {
 
     @Override
     public EtlJob save(EtlJob job) {
-        log.debug("Saving job to database: {}", job.getJobId());
+        log.debug("Saving job to database: {}", job.jobId());
 
-        Optional<JobEntity> existingEntity = jpaRepository.findById(job.getJobId());
+        Optional<JobEntity> existingEntity = jpaRepository.findById(job.jobId());
 
         JobEntity entityToSave;
         if (existingEntity.isPresent()) {
             // Обновление существующего job'а
             entityToSave = jobMapper.updateEntity(existingEntity.get(), job);
-            log.debug("Updating existing job: {}", job.getJobId());
+            log.debug("Updating existing job: {}", job.jobId());
         } else {
             // Создание нового job'а
             entityToSave = jobMapper.toEntity(job);
-            log.debug("Creating new job: {}", job.getJobId());
+            log.debug("Creating new job: {}", job.jobId());
         }
 
         JobEntity savedEntity = jpaRepository.save(entityToSave);

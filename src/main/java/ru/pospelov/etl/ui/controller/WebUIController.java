@@ -95,13 +95,13 @@ public class WebUIController {
      */
     @GetMapping("/jobs/new")
     public String newJobForm(Model model) {
-        log.debug("Rendering new job form");
+        log.debug("Rendering new job form (schema-driven)");
 
         model.addAttribute("isEditMode", false);
         model.addAttribute("job", null);
         model.addAttribute("pageTitle", "Create Job | ETL Engine");
 
-        return "job-form";
+        return "job-form-schema";
     }
 
     /**
@@ -110,7 +110,7 @@ public class WebUIController {
      */
     @GetMapping("/jobs/{id}/edit")
     public String editJobForm(@PathVariable String id, Model model) {
-        log.debug("Rendering edit job form for job: {}", id);
+        log.debug("Rendering edit job form for job: {} (schema-driven)", id);
 
         try {
             JobResponse job = jobService.getJob(id);
@@ -119,7 +119,7 @@ public class WebUIController {
             model.addAttribute("job", job);
             model.addAttribute("pageTitle", "Edit Job: " + id + " | ETL Engine");
 
-            return "job-form";
+            return "job-form-schema";
 
         } catch (Exception e) {
             log.error("Failed to load job for editing: {}", id, e);

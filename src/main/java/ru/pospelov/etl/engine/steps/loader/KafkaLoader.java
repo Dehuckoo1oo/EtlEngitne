@@ -8,9 +8,10 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.springframework.stereotype.Component;
 import ru.pospelov.etl.engine.config.KafkaClientFactory;
+import ru.pospelov.etl.engine.config.KafkaFormat;
+import ru.pospelov.etl.engine.config.loader.KafkaLoaderConfig;
 import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
 import ru.pospelov.etl.engine.exception.LoadingException;
-import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
 
 import java.util.ArrayList;
@@ -22,7 +23,7 @@ import java.util.concurrent.Future;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class KafkaLoader implements Loader {
+public class KafkaLoader {
 
     private final KafkaClientFactory clientFactory;
 
@@ -31,18 +32,15 @@ public class KafkaLoader implements Loader {
     private volatile Producer<String, Object> stringProducer;
     private final Object producerLock = new Object();
 
-    @Override
-    public String getType() {
-        return "kafka";
-    }
-
-    @Override
-    public void load(Collection<EtlRecord> records, EtlJob job) {
+    /**
+     * Load data to Kafka using type-safe configuration.
+     */
+    public void load(KafkaLoaderConfig config, String jobId, Collection<EtlRecord> records) {
         if (records.isEmpty()) return;
 
-        String topic = job.getParam("topic").toString();
-        String format = String.valueOf(job.getParamOrDefault("format", "string"));
-        boolean isAvro = format.equalsIgnoreCase("avro");
+        String topic = config.topic();
+        KafkaFormat format = config.format();
+        boolean isAvro = (format == KafkaFormat.AVRO);
 
         try {
             // Используем кэшированный Producer вместо создания нового
@@ -59,17 +57,17 @@ public class KafkaLoader implements Loader {
                     Future<RecordMetadata> future = producer.send(kafkaRecord);
                     pendingSends.add(new PendingSend(record, future));
                 } catch (Exception e) {
-                    throw new LoadingException("Kafka loading failed", job.getJobId(), record, EtlErrorSeverity.CRITICAL, e);
+                    throw new LoadingException("Kafka loading failed", jobId, record, EtlErrorSeverity.CRITICAL, e);
                 }
             }
 
             producer.flush();
-            waitForSends(job, pendingSends);
+            waitForSends(jobId, pendingSends);
         } catch (LoadingException e) {
             throw e;
         } catch (Exception e) {
             log.error("Kafka load failed", e);
-            throw new LoadingException("Kafka load failed", job.getJobId(), null, EtlErrorSeverity.CRITICAL, e);
+            throw new LoadingException("Kafka load failed", jobId, null, EtlErrorSeverity.CRITICAL, e);
         }
     }
 
@@ -126,15 +124,15 @@ public class KafkaLoader implements Loader {
         }
     }
 
-    private void waitForSends(EtlJob job, List<PendingSend> pendingSends) {
+    private void waitForSends(String jobId, List<PendingSend> pendingSends) {
         for (PendingSend pending : pendingSends) {
             try {
                 pending.future().get();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new LoadingException("Kafka loading interrupted", job.getJobId(), pending.record(), EtlErrorSeverity.CRITICAL, e);
+                throw new LoadingException("Kafka loading interrupted", jobId, pending.record(), EtlErrorSeverity.CRITICAL, e);
             } catch (ExecutionException e) {
-                throw new LoadingException("Kafka loading failed", job.getJobId(), pending.record(), EtlErrorSeverity.CRITICAL, e.getCause());
+                throw new LoadingException("Kafka loading failed", jobId, pending.record(), EtlErrorSeverity.CRITICAL, e.getCause());
             }
         }
     }

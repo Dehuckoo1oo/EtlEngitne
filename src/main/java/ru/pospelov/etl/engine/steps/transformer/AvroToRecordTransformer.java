@@ -4,33 +4,29 @@ import org.apache.avro.generic.GenericRecord;
 import org.springframework.stereotype.Component;
 import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
 import ru.pospelov.etl.engine.exception.TransformationException;
-import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
 
 import java.util.Collection;
 
 @Component
-public class AvroToRecordTransformer implements Transformer {
+public class AvroToRecordTransformer {
 
-    @Override
-    public String getType() {
-        return "avro";
-    }
-
-    @Override
-    public Collection<EtlRecord> transform(Collection<EtlRecord> records, EtlJob job) {
+    /**
+     * Transform Avro GenericRecords to EtlRecords.
+     */
+    public Collection<EtlRecord> transform(Collection<EtlRecord> records) {
         return records.stream()
-                .map(record -> fromAvro(record, job))
+                .map(this::fromAvro)
                 .toList();
     }
 
-    private EtlRecord fromAvro(EtlRecord raw, EtlJob job) {
+    private EtlRecord fromAvro(EtlRecord raw) {
         Object value = raw.get("value");
 
         if (!(value instanceof GenericRecord avro)) {
             throw new TransformationException(
                     "Expected GenericRecord, got: " + value,
-                    job.getJobId(),
+                    null,
                     raw,
                     EtlErrorSeverity.NON_CRITICAL
             );

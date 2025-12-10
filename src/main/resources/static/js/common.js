@@ -17,7 +17,7 @@ const ETLEngine = {
      * Инициализация темы из localStorage
      */
     initTheme: function() {
-        const savedTheme = localStorage.getItem('theme') || 'light';
+        const savedTheme = localStorage.getItem('theme') || 'dark';
         document.documentElement.setAttribute('data-theme', savedTheme);
     },
 
@@ -49,7 +49,7 @@ const ETLEngine = {
         button.setAttribute('aria-label', 'Toggle theme');
         button.setAttribute('title', 'Toggle dark/light theme');
 
-        const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+        const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
         button.textContent = currentTheme === 'light' ? '🌙' : '☀️';
 
         button.addEventListener('click', () => this.toggleTheme());

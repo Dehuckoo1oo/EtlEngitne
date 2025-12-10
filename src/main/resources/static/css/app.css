@@ -226,9 +226,17 @@ body {
 /* ==================== Header ==================== */
 .navbar {
     background: var(--bg-primary) !important;
-    border-bottom: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-color) !important;
     box-shadow: var(--shadow-xs);
     transition: all var(--transition-normal);
+}
+
+.navbar-brand {
+    color: var(--text-primary) !important;
+}
+
+.navbar-brand:hover {
+    color: var(--primary-color) !important;
 }
 
 /* ==================== Typography ==================== */
@@ -380,15 +388,39 @@ h3 {
 }
 
 .btn-outline-secondary {
-    color: var(--text-primary);
-    border-color: var(--border-color-strong);
-    background-color: var(--bg-primary);
+    color: var(--text-primary) !important;
+    border-color: var(--border-color-strong) !important;
+    background-color: var(--bg-primary) !important;
 }
 
 .btn-outline-secondary:hover {
-    background-color: var(--bg-secondary);
-    border-color: var(--text-primary);
-    color: var(--text-primary);
+    background-color: var(--bg-secondary) !important;
+    border-color: var(--text-primary) !important;
+    color: var(--text-primary) !important;
+}
+
+.btn-outline-success {
+    color: var(--success-color) !important;
+    border-color: var(--success-color) !important;
+    background-color: var(--bg-primary) !important;
+}
+
+.btn-outline-success:hover {
+    background-color: var(--success-color) !important;
+    border-color: var(--success-color) !important;
+    color: white !important;
+}
+
+.btn-outline-danger {
+    color: var(--error-color) !important;
+    border-color: var(--error-color) !important;
+    background-color: var(--bg-primary) !important;
+}
+
+.btn-outline-danger:hover {
+    background-color: var(--error-color) !important;
+    border-color: var(--error-color) !important;
+    color: white !important;
 }
 
 .btn-sm {
@@ -486,10 +518,10 @@ h3 {
 }
 
 .table thead th {
-    background: linear-gradient(135deg, var(--bg-secondary), var(--bg-tertiary));
-    border-bottom: 2px solid var(--border-color-strong);
+    background: linear-gradient(135deg, var(--bg-secondary), var(--bg-tertiary)) !important;
+    border-bottom: 2px solid var(--border-color-strong) !important;
     font-weight: 700;
-    color: var(--text-primary);
+    color: var(--text-primary) !important;
     text-transform: uppercase;
     font-size: var(--font-size-s);
     letter-spacing: 1px;
@@ -501,23 +533,25 @@ h3 {
 
 .table tbody tr {
     transition: all var(--transition-fast);
-    border-bottom: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-color) !important;
+    background-color: var(--bg-primary) !important;
 }
 
 .table tbody tr:nth-child(even) {
-    background-color: var(--bg-secondary);
+    background-color: var(--bg-secondary) !important;
 }
 
 .table tbody tr:hover {
-    background: linear-gradient(90deg, var(--bg-secondary), var(--bg-primary));
+    background: linear-gradient(90deg, var(--bg-secondary), var(--bg-primary)) !important;
     transform: scale(1.01);
     box-shadow: var(--shadow-xs);
 }
 
 .table tbody td {
     padding: var(--space-l);
-    color: var(--text-primary);
+    color: var(--text-primary) !important;
     vertical-align: middle;
+    background-color: transparent !important;
 }
 
 .table-responsive {
@@ -637,6 +671,18 @@ textarea.form-control {
 }
 
 /* ==================== Утилиты ==================== */
+.text-muted {
+    color: var(--text-secondary) !important;
+}
+
+.border-end {
+    border-right: 1px solid var(--border-color) !important;
+}
+
+.border-bottom {
+    border-bottom: 1px solid var(--border-color) !important;
+}
+
 .text-truncate-custom {
     white-space: nowrap;
     overflow: hidden;

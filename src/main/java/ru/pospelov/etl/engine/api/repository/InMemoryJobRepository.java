@@ -19,10 +19,10 @@ public class InMemoryJobRepository implements JobRepository {
 
     @Override
     public EtlJob save(EtlJob job) {
-        if (job == null || job.getJobId() == null) {
+        if (job == null || job.jobId() == null) {
             throw new IllegalArgumentException("Job and jobId cannot be null");
         }
-        jobs.put(job.getJobId(), job);
+        jobs.put(job.jobId(), job);
         return job;
     }
 

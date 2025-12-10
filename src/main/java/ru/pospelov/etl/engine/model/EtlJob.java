@@ -1,25 +1,61 @@
 package ru.pospelov.etl.engine.model;
 
-import lombok.AllArgsConstructor;
-import lombok.Getter;
-import lombok.ToString;
+import com.fasterxml.jackson.annotation.JsonSubTypes;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import ru.pospelov.etl.engine.config.extractor.*;
+import ru.pospelov.etl.engine.config.transformer.*;
+import ru.pospelov.etl.engine.config.loader.*;
 
-import java.util.Map;
+/**
+ * ETL Job - fully type-safe configuration.
+ *
+ * REMOVED:
+ * - Map<String, Object> parameters ❌
+ * - String source ❌
+ * - String targetTable ❌
+ * - getParamOrDefault() ❌
+ *
+ * ADDED:
+ * - Type-safe configurations ✅
+ * - Jackson polymorphic serialization ✅
+ * - Bean Validation ✅
+ * - Optional for nullable fields ✅
+ */
+public record EtlJob(
+    @NotBlank(message = "Job ID is required")
+    String jobId,
 
-@AllArgsConstructor
-@Getter
-@ToString
-public class EtlJob {
-    private final String jobId;
-    private final String source;
-    private final String targetTable;
-    private final Map<String, Object> parameters;
+    @Valid
+    @NotNull(message = "Extractor configuration is required")
+    @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "extractorType")
+    @JsonSubTypes({
+        @JsonSubTypes.Type(value = JdbcExtractorConfig.class, name = "sql"),
+        @JsonSubTypes.Type(value = KafkaExtractorConfig.class, name = "kafka")
+    })
+    ExtractorConfig extractorConfig,
 
-    public Object getParam(String key) {
-        return parameters.get(key);
-    }
+    @Valid
+    @NotNull(message = "Transformer configuration is required")
+    @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "transformerType")
+    @JsonSubTypes({
+        @JsonSubTypes.Type(value = NoopTransformerConfig.class, name = "noop"),
+        @JsonSubTypes.Type(value = AvroToRecordTransformerConfig.class, name = "avro"),
+        @JsonSubTypes.Type(value = RecordToAvroTransformerConfig.class, name = "record-to-avro")
+    })
+    TransformerConfig transformerConfig,
 
-    public Object getParamOrDefault(String key, Object defaultValue) {
-        return parameters.getOrDefault(key, defaultValue);
-    }
+    @Valid
+    @NotNull(message = "Loader configuration is required")
+    @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "loaderType")
+    @JsonSubTypes({
+        @JsonSubTypes.Type(value = JdbcLoaderConfig.class, name = "sql"),
+        @JsonSubTypes.Type(value = FastSqlLoaderConfig.class, name = "fast-sql"),
+        @JsonSubTypes.Type(value = KafkaLoaderConfig.class, name = "kafka")
+    })
+    LoaderConfig loaderConfig
+) {
+    // Record - no methods needed!
 }

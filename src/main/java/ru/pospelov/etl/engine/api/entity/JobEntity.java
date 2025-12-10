@@ -7,12 +7,14 @@ import java.time.LocalDateTime;
 
 /**
  * JPA-сущность для хранения ETL job'ов в базе данных.
- * Представляет таблицу SUPPORT.service.tEtlJob с метаданными и параметрами задач.
+ * Представляет таблицу SUPPORT.service.tEtlJob с метаданными и type-safe конфигурациями компонентов.
  */
 @Entity
 @Table(name = "tEtlJob", schema = "service", catalog = "SUPPORT", indexes = {
-        @Index(name = "IX_tEtlJob_Status", columnList = "Status"),
-        @Index(name = "IX_tEtlJob_CreatedAt", columnList = "CreatedAt")
+    @Index(name = "IX_tEtlJob_ExtractorType", columnList = "ExtractorType"),
+    @Index(name = "IX_tEtlJob_LoaderType", columnList = "LoaderType"),
+    @Index(name = "IX_tEtlJob_Status", columnList = "Status"),
+    @Index(name = "IX_tEtlJob_CreatedAt", columnList = "CreatedAt")
 })
 @Getter
 @Setter
@@ -35,23 +37,40 @@ public class JobEntity {
     private String name;
 
     /**
-     * Источник данных: SQL-запрос (для SQL extractor) или Kafka топик (для Kafka extractor)
+     * Тип экстрактора: sql, kafka
      */
-    @Column(name = "Source", columnDefinition = "NVARCHAR(MAX)")
-    private String source;
+    @Column(name = "ExtractorType", nullable = false, length = 50)
+    private String extractorType;
 
     /**
-     * Целевая таблица (для SQL loader) или null для Kafka
+     * Конфигурация экстрактора в формате JSON
      */
-    @Column(name = "Target", length = 500)
-    private String target;
+    @Column(name = "ExtractorConfig", nullable = false, columnDefinition = "NVARCHAR(MAX)")
+    private String extractorConfig;
 
     /**
-     * Параметры job'а в формате JSON
-     * Содержит конфигурацию extractor, transformer, loader и другие параметры
+     * Тип трансформера: noop, avro, record-to-avro
      */
-    @Column(name = "Params", nullable = false, columnDefinition = "NVARCHAR(MAX)")
-    private String params;
+    @Column(name = "TransformerType", nullable = false, length = 50)
+    private String transformerType;
+
+    /**
+     * Конфигурация трансформера в формате JSON
+     */
+    @Column(name = "TransformerConfig", nullable = false, columnDefinition = "NVARCHAR(MAX)")
+    private String transformerConfig;
+
+    /**
+     * Тип загрузчика: sql, fast-sql, kafka
+     */
+    @Column(name = "LoaderType", nullable = false, length = 50)
+    private String loaderType;
+
+    /**
+     * Конфигурация загрузчика в формате JSON
+     */
+    @Column(name = "LoaderConfig", nullable = false, columnDefinition = "NVARCHAR(MAX)")
+    private String loaderConfig;
 
     /**
      * Дата и время создания job'а

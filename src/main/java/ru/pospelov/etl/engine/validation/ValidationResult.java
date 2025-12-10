@@ -9,21 +9,21 @@ import java.util.List;
  */
 public class ValidationResult {
     
-    private final List<ValidationError> errors;
+    private final List<ValidationResultError> errors;
     
     public ValidationResult() {
         this.errors = new ArrayList<>();
     }
     
     public void addError(String field, String message) {
-        errors.add(new ValidationError(field, message));
+        errors.add(new ValidationResultError(field, message));
     }
     
-    public void addError(ValidationError error) {
+    public void addError(ValidationResultError error) {
         errors.add(error);
     }
     
-    public List<ValidationError> getErrors() {
+    public List<ValidationResultError> getErrors() {
         return Collections.unmodifiableList(errors);
     }
     
@@ -37,29 +37,10 @@ public class ValidationResult {
         }
         StringBuilder sb = new StringBuilder("Validation failed with ").append(errors.size()).append(" error(s):\n");
         for (int i = 0; i < errors.size(); i++) {
-            ValidationError error = errors.get(i);
+            ValidationResultError error = errors.get(i);
             sb.append("  ").append(i + 1).append(". ").append(error.getField())
               .append(": ").append(error.getMessage()).append("\n");
         }
         return sb.toString();
     }
-    
-    public static class ValidationError {
-        private final String field;
-        private final String message;
-        
-        public ValidationError(String field, String message) {
-            this.field = field;
-            this.message = message;
-        }
-        
-        public String getField() {
-            return field;
-        }
-        
-        public String getMessage() {
-            return message;
-        }
-    }
 }
-

@@ -1,5 +1,6 @@
 package ru.pospelov.etl.engine.api.repository;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -8,6 +9,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import ru.pospelov.etl.engine.api.entity.JobEntity;
 import ru.pospelov.etl.engine.api.mapper.JobMapper;
+import ru.pospelov.etl.engine.config.KafkaFormat;
+import ru.pospelov.etl.engine.config.extractor.JdbcExtractorConfig;
+import ru.pospelov.etl.engine.config.loader.KafkaLoaderConfig;
+import ru.pospelov.etl.engine.config.transformer.NoopTransformerConfig;
 import ru.pospelov.etl.engine.model.EtlJob;
 
 import java.time.LocalDateTime;
@@ -35,27 +40,47 @@ class DatabaseJobRepositoryTest {
 
     private EtlJob sampleEtlJob;
     private JobEntity sampleJobEntity;
+    private ObjectMapper objectMapper;
 
     @BeforeEach
-    void setUp() {
-        Map<String, Object> params = new HashMap<>();
-        params.put("extractorType", "sql");
-        params.put("loaderType", "kafka");
-        params.put("threads", 4);
+    void setUp() throws Exception {
+        objectMapper = new ObjectMapper();
+        objectMapper.findAndRegisterModules();
+
+        // Создаем type-safe конфигурации
+        JdbcExtractorConfig extractorConfig = new JdbcExtractorConfig(
+                "SELECT * FROM test_table",
+                Optional.empty(),
+                1,
+                Optional.empty(),
+                4,
+                1000
+        );
+
+        NoopTransformerConfig transformerConfig = new NoopTransformerConfig();
+
+        KafkaLoaderConfig loaderConfig = new KafkaLoaderConfig(
+                "target-topic",
+                KafkaFormat.AVRO
+        );
 
         sampleEtlJob = new EtlJob(
                 "test-job-1",
-                "SELECT * FROM test_table",
-                "target_table",
-                params
+                extractorConfig,
+                transformerConfig,
+                loaderConfig
         );
 
+        // Создаем JobEntity с JSON конфигурациями
         sampleJobEntity = JobEntity.builder()
                 .id("test-job-1")
                 .name("test-job-1")
-                .source("SELECT * FROM test_table")
-                .target("target_table")
-                .params("{\"extractorType\":\"sql\",\"loaderType\":\"kafka\",\"threads\":4}")
+                .extractorType("sql")
+                .extractorConfig(objectMapper.writeValueAsString(extractorConfig))
+                .transformerType("noop")
+                .transformerConfig(objectMapper.writeValueAsString(transformerConfig))
+                .loaderType("kafka")
+                .loaderConfig(objectMapper.writeValueAsString(loaderConfig))
                 .createdAt(LocalDateTime.now())
                 .updatedAt(LocalDateTime.now())
                 .createdBy("system")
@@ -76,7 +101,7 @@ class DatabaseJobRepositoryTest {
 
         // Then
         assertNotNull(result);
-        assertEquals("test-job-1", result.getJobId());
+        assertEquals("test-job-1", result.jobId());
         verify(jpaRepository).findById("test-job-1");
         verify(jobMapper).toEntity(sampleEtlJob);
         verify(jpaRepository).save(sampleJobEntity);
@@ -84,14 +109,31 @@ class DatabaseJobRepositoryTest {
     }
 
     @Test
-    void save_existingJob_shouldUpdateEntity() {
+    void save_existingJob_shouldUpdateEntity() throws Exception {
         // Given
+        JdbcExtractorConfig oldExtractorConfig = new JdbcExtractorConfig(
+                "SELECT * FROM old_table",
+                Optional.empty(),
+                1,
+                Optional.empty(),
+                4,
+                1000
+        );
+        NoopTransformerConfig oldTransformerConfig = new NoopTransformerConfig();
+        KafkaLoaderConfig oldLoaderConfig = new KafkaLoaderConfig(
+                "old-topic",
+                KafkaFormat.AVRO
+        );
+
         JobEntity existingEntity = JobEntity.builder()
                 .id("test-job-1")
                 .name("test-job-1")
-                .source("SELECT * FROM old_table")
-                .target("old_target")
-                .params("{\"extractorType\":\"kafka\"}")
+                .extractorType("sql")
+                .extractorConfig(objectMapper.writeValueAsString(oldExtractorConfig))
+                .transformerType("noop")
+                .transformerConfig(objectMapper.writeValueAsString(oldTransformerConfig))
+                .loaderType("kafka")
+                .loaderConfig(objectMapper.writeValueAsString(oldLoaderConfig))
                 .createdAt(LocalDateTime.of(2024, 1, 1, 10, 0))
                 .updatedAt(LocalDateTime.of(2024, 1, 1, 10, 0))
                 .createdBy("original_user")
@@ -125,7 +167,7 @@ class DatabaseJobRepositoryTest {
 
         // Then
         assertTrue(result.isPresent());
-        assertEquals("test-job-1", result.get().getJobId());
+        assertEquals("test-job-1", result.get().jobId());
         verify(jpaRepository).findById("test-job-1");
         verify(jobMapper).toEtlJob(sampleJobEntity);
     }
@@ -145,20 +187,37 @@ class DatabaseJobRepositoryTest {
     }
 
     @Test
-    void findAll_shouldReturnAllJobs() {
+    void findAll_shouldReturnAllJobs() throws Exception {
         // Given
+        JdbcExtractorConfig extractorConfig2 = new JdbcExtractorConfig(
+                "SELECT * FROM table2",
+                Optional.empty(),
+                1,
+                Optional.empty(),
+                4,
+                1000
+        );
+        NoopTransformerConfig transformerConfig2 = new NoopTransformerConfig();
+        KafkaLoaderConfig loaderConfig2 = new KafkaLoaderConfig(
+                "target2",
+                KafkaFormat.AVRO
+        );
+
         JobEntity entity2 = JobEntity.builder()
                 .id("test-job-2")
                 .name("test-job-2")
-                .source("SELECT * FROM table2")
-                .target("target2")
-                .params("{\"extractorType\":\"kafka\"}")
+                .extractorType("sql")
+                .extractorConfig(objectMapper.writeValueAsString(extractorConfig2))
+                .transformerType("noop")
+                .transformerConfig(objectMapper.writeValueAsString(transformerConfig2))
+                .loaderType("kafka")
+                .loaderConfig(objectMapper.writeValueAsString(loaderConfig2))
                 .createdAt(LocalDateTime.now())
                 .updatedAt(LocalDateTime.now())
                 .status("ACTIVE")
                 .build();
 
-        EtlJob etlJob2 = new EtlJob("test-job-2", "SELECT * FROM table2", "target2", new HashMap<>());
+        EtlJob etlJob2 = new EtlJob("test-job-2", extractorConfig2, transformerConfig2, loaderConfig2);
 
         List<JobEntity> entities = Arrays.asList(sampleJobEntity, entity2);
         when(jpaRepository.findAll()).thenReturn(entities);
@@ -170,8 +229,8 @@ class DatabaseJobRepositoryTest {
 
         // Then
         assertEquals(2, results.size());
-        assertEquals("test-job-1", results.get(0).getJobId());
-        assertEquals("test-job-2", results.get(1).getJobId());
+        assertEquals("test-job-1", results.get(0).jobId());
+        assertEquals("test-job-2", results.get(1).jobId());
         verify(jpaRepository).findAll();
         verify(jobMapper, times(2)).toEtlJob(any());
     }
@@ -257,7 +316,7 @@ class DatabaseJobRepositoryTest {
 
         // Then
         assertEquals(1, results.size());
-        assertEquals("test-job-1", results.get(0).getJobId());
+        assertEquals("test-job-1", results.get(0).jobId());
         verify(jpaRepository).findByStatus("ACTIVE");
         verify(jobMapper).toEtlJob(sampleJobEntity);
     }
@@ -274,7 +333,7 @@ class DatabaseJobRepositoryTest {
 
         // Then
         assertEquals(1, results.size());
-        assertEquals("test-job-1", results.get(0).getJobId());
+        assertEquals("test-job-1", results.get(0).jobId());
         verify(jpaRepository).findAllActive();
         verify(jobMapper).toEtlJob(sampleJobEntity);
     }

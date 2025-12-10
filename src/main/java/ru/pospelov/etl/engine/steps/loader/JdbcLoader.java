@@ -5,9 +5,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import ru.pospelov.etl.engine.config.loader.JdbcLoaderConfig;
 import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
 import ru.pospelov.etl.engine.exception.LoadingException;
-import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
 
 import java.sql.PreparedStatement;
@@ -17,20 +17,19 @@ import java.util.*;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class JdbcLoader implements Loader {
+public class JdbcLoader {
 
     private final JdbcTemplate jdbcTemplate;
 
-    @Override
-    public String getType() {
-        return "sql";
-    }
-
-    @Override
-    public void load(Collection<EtlRecord> records, EtlJob job) {
+    /**
+     * Load data to JDBC target using type-safe configuration.
+     */
+    public void load(JdbcLoaderConfig config, String jobId, Collection<EtlRecord> records) {
         if (records.isEmpty()) return;
 
-        String targetTable = job.getTargetTable();
+        String targetTable = config.targetTable();
+        int batchSize = config.streamBatchSize();
+
         List<EtlRecord> recordList = new ArrayList<>(records);
         Set<String> columns = recordList.get(0).getAll().keySet();
 
@@ -38,10 +37,8 @@ public class JdbcLoader implements Loader {
         String placeholders = String.join(", ", Collections.nCopies(columns.size(), "?"));
         String sql = String.format("INSERT INTO %s (%s) VALUES (%s)", targetTable, columnNames, placeholders);
 
-        int batchSize = (int) job.getParamOrDefault("streamBatchSize", 50000);
-
         log.debug("Job '{}' loading {} records into '{}' with {} columns",
-                job.getJobId(), recordList.size(), targetTable, columns.size());
+                jobId, recordList.size(), targetTable, columns.size());
 
         try {
             long startTime = System.currentTimeMillis();
@@ -73,15 +70,15 @@ public class JdbcLoader implements Loader {
             long elapsedMs = System.currentTimeMillis() - startTime;
             if (log.isDebugEnabled()) {
                 log.debug("Job '{}' loaded {} records into '{}' in {}ms",
-                        job.getJobId(), totalInserted, targetTable, elapsedMs);
+                        jobId, totalInserted, targetTable, elapsedMs);
             }
         } catch (Exception e) {
             log.error("Job '{}' failed to load records into '{}': {}",
-                    job.getJobId(), targetTable, e.getMessage());
+                    jobId, targetTable, e.getMessage());
             EtlRecord failedRecord = recordList.isEmpty() ? null : recordList.get(0);
             throw new LoadingException(
                     "Failed to execute JDBC batch",
-                    job.getJobId(),
+                    jobId,
                     failedRecord,
                     EtlErrorSeverity.CRITICAL,
                     e
