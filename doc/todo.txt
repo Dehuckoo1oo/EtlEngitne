@@ -1,15 +1,2 @@
-Проверить, как используется схема в интеграционном тесте и выяснить почему она используется только при загрузке в кафку
-судя по тесту не нужно указывать количество партиций при kafka -> sql так же как Partition Column и Key Column
-
-
-ВАЖНО!!!
-нужно собрать все поля для шагов loader, transform и extract, убрать дефолтные значения, сделать поля обязательными и в api и в форме работать только с этими полями, т.е. если для loader нужны определенные поля - они должны появится на форме, а если не нужны, то этих полей на форме быть не должно.
-Должна проходить валидация этих полей.
-
 Сделать новый KafkaExtract, который зависит от числа партиций в топике - читал все партиции, пока не наберет строк в размере батча.
-
-зарефакторить JdbcExtractor, JdbcPartitionQueryTask и JdbcStreamingResultSetExtractor убрать авро, т.к. оно теперь в трансформере.
-
-правильно ли работать с object в [JdbcStreamingResultSetExtractor.java](src/main/java/ru/pospelov/etl/engine/steps/extractor/jdbc/JdbcStreamingResultSetExtractor.java)
-String col = md.getColumnLabel(i);
-                Object val = rs.getObject(i);?
+Сделать преобразование типов sql -> avro для этого нужно создать правила преобразования типов.
