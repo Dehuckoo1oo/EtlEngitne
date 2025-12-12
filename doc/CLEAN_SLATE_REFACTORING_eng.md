@@ -556,7 +556,7 @@ public class EtlComponentFactory {
 
     private final JdbcLoader jdbcLoader;
     private final FastSqlServerLoader fastSqlLoader;
-    private final KafkaLoader kafkaLoader;
+    private final KafkaByPartitionLoader kafkaLoader;
 
     /**
      * Extract data using extractor configuration.

@@ -9,21 +9,6 @@ import ru.pospelov.etl.engine.config.extractor.*;
 import ru.pospelov.etl.engine.config.transformer.*;
 import ru.pospelov.etl.engine.config.loader.*;
 
-/**
- * ETL Job - fully type-safe configuration.
- *
- * REMOVED:
- * - Map<String, Object> parameters ❌
- * - String source ❌
- * - String targetTable ❌
- * - getParamOrDefault() ❌
- *
- * ADDED:
- * - Type-safe configurations ✅
- * - Jackson polymorphic serialization ✅
- * - Bean Validation ✅
- * - Optional for nullable fields ✅
- */
 public record EtlJob(
     @NotBlank(message = "Job ID is required")
     String jobId,

@@ -556,7 +556,7 @@ public class EtlComponentFactory {
 
     private final JdbcLoader jdbcLoader;
     private final FastSqlServerLoader fastSqlLoader;
-    private final KafkaLoader kafkaLoader;
+    private final KafkaByPartitionLoader kafkaLoader;
 
     /**
      * Извлечь данные используя конфигурацию extractor.
@@ -564,11 +564,9 @@ public class EtlComponentFactory {
      */
     public void extract(EtlJob job, Consumer<Collection<EtlRecord>> batchConsumer) {
         switch (job.extractorConfig()) {
-            case JdbcExtractorConfig config ->
-                jdbcExtractor.extract(config, job.jobId(), batchConsumer);
+            case JdbcExtractorConfig config -> jdbcExtractor.extract(config, job.jobId(), batchConsumer);
 
-            case KafkaExtractorConfig config ->
-                kafkaExtractor.extract(config, job.jobId(), batchConsumer);
+            case KafkaExtractorConfig config -> kafkaExtractor.extract(config, job.jobId(), batchConsumer);
 
             // Компилятор проверяет exhaustiveness!
             // Если добавить новый sealed тип - код не скомпилируется без обработки
@@ -580,14 +578,11 @@ public class EtlComponentFactory {
      */
     public Collection<EtlRecord> transform(EtlJob job, Collection<EtlRecord> records) {
         return switch (job.transformerConfig()) {
-            case NoopTransformerConfig config ->
-                noopTransformer.transform(records);
+            case NoopTransformerConfig config -> noopTransformer.transform(records);
 
-            case AvroToRecordTransformerConfig config ->
-                avroToRecordTransformer.transform(records);
+            case AvroToRecordTransformerConfig config -> avroToRecordTransformer.transform(records);
 
-            case RecordToAvroTransformerConfig config ->
-                recordToAvroTransformer.transform(records, config);
+            case RecordToAvroTransformerConfig config -> recordToAvroTransformer.transform(records, config);
         };
     }
 
@@ -596,14 +591,11 @@ public class EtlComponentFactory {
      */
     public void load(EtlJob job, Collection<EtlRecord> records) {
         switch (job.loaderConfig()) {
-            case JdbcLoaderConfig config ->
-                jdbcLoader.load(config, job.jobId(), records);
+            case JdbcLoaderConfig config -> jdbcLoader.load(config, job.jobId(), records);
 
-            case FastSqlLoaderConfig config ->
-                fastSqlLoader.load(config, job.jobId(), records);
+            case FastSqlLoaderConfig config -> fastSqlLoader.load(config, job.jobId(), records);
 
-            case KafkaLoaderConfig config ->
-                kafkaLoader.load(config, job.jobId(), records);
+            case KafkaLoaderConfig config -> kafkaLoader.load(config, job.jobId(), records);
         }
     }
 }

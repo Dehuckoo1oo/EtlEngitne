@@ -23,7 +23,7 @@ import java.util.concurrent.Future;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class KafkaLoader {
+public class KafkaByPartitionLoader {
 
     private final KafkaClientFactory clientFactory;
 

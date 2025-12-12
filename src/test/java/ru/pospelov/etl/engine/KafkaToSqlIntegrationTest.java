@@ -298,10 +298,10 @@ public class KafkaToSqlIntegrationTest {
                 100_000                  // streamBatchSize
         );
 
-        RecordToAvroTransformerConfig transformerConfig = new RecordToAvroTransformerConfig("order-events-value-value");
+        RecordToAvroTransformerConfig transformerConfig = new RecordToAvroTransformerConfig("order-events-value");
 
         KafkaLoaderConfig loaderConfig = new KafkaLoaderConfig(
-                "order-events-value",    // topic
+                "order-events",    // topic
                 KafkaFormat.AVRO        // format
         );
 
@@ -324,7 +324,7 @@ public class KafkaToSqlIntegrationTest {
 
         // Создаем type-safe конфигурацию для Kafka → SQL
         KafkaExtractorConfig kafkaExtractorConfig = new KafkaExtractorConfig(
-                "order-events-value",    // topic
+                "order-events",    // topic
                 kafkaStart.minusSeconds(60).toEpochMilli(), // startTimestamp - начинаем немного раньше
                 kafkaEnd.plusSeconds(60).toEpochMilli(),    // endTimestamp - заканчиваем немного позже
                 KafkaFormat.AVRO,        // format

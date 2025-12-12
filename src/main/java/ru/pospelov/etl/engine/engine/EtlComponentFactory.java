@@ -32,7 +32,7 @@ public class EtlComponentFactory {
 
     private final JdbcLoader jdbcLoader;
     private final FastSqlServerLoader fastSqlLoader;
-    private final KafkaLoader kafkaLoader;
+    private final KafkaByPartitionLoader kafkaByPartitionLoader;
 
     /**
      * Extract data using extractor configuration.
@@ -79,7 +79,7 @@ public class EtlComponentFactory {
                 fastSqlLoader.load(config, job.jobId(), records);
 
             case KafkaLoaderConfig config ->
-                kafkaLoader.load(config, job.jobId(), records);
+                kafkaByPartitionLoader.load(config, job.jobId(), records);
         }
     }
 }
