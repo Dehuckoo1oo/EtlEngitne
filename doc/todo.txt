@@ -8,8 +8,6 @@
 
 Сделать новый KafkaExtract, который зависит от числа партиций в топике - читал все партиции, пока не наберет строк в размере батча.
 
-зачем нужен именно objectMapper.findAndRegisterModules();? можно по другому?
-
 зарефакторить JdbcExtractor, JdbcPartitionQueryTask и JdbcStreamingResultSetExtractor убрать авро, т.к. оно теперь в трансформере.
 
 правильно ли работать с object в [JdbcStreamingResultSetExtractor.java](src/main/java/ru/pospelov/etl/engine/steps/extractor/jdbc/JdbcStreamingResultSetExtractor.java)

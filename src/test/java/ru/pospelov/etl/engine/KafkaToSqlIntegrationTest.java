@@ -16,7 +16,7 @@ import ru.pospelov.etl.engine.config.loader.FastSqlLoaderConfig;
 import ru.pospelov.etl.engine.config.loader.KafkaLoaderConfig;
 import ru.pospelov.etl.engine.config.transformer.AvroToRecordTransformerConfig;
 import ru.pospelov.etl.engine.config.transformer.RecordToAvroTransformerConfig;
-import ru.pospelov.etl.engine.engine.EtlPipelineFactory;
+import ru.pospelov.etl.engine.pipeline.EtlPipelineFactory;
 import ru.pospelov.etl.engine.model.EtlBulkRecord;
 import ru.pospelov.etl.engine.model.EtlJob;
 import ru.pospelov.etl.engine.model.EtlRecord;
