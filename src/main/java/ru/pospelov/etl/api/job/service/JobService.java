@@ -265,14 +265,19 @@ public class JobService {
     private ExtractorConfig createExtractorConfig(String type, Map<String, Object> params, String source) {
         return switch (type) {
             case "sql" -> {
+                // Support both sqlQuery (custom query) and table (table-based mode)
                 String sqlQuery = source != null ? source : (String) params.get("sqlQuery");
+                String table = (String) params.get("table");
+
+                Optional<String> sqlQueryOpt = Optional.ofNullable(sqlQuery);
+                Optional<String> tableOpt = Optional.ofNullable(table);
                 Optional<String> partitionColumn = Optional.ofNullable((String) params.get("partitionColumn"));
                 int partitions = getIntParam(params, "partitions", 1);
                 Optional<String> keyColumn = Optional.ofNullable((String) params.get("keyColumn"));
                 int threads = getIntParam(params, "threads", 1);
                 int streamBatchSize = getIntParam(params, "streamBatchSize", 1000);
 
-                yield new JdbcExtractorConfig(sqlQuery, partitionColumn, partitions, keyColumn, threads, streamBatchSize);
+                yield new JdbcExtractorConfig(sqlQueryOpt, tableOpt, partitionColumn, partitions, keyColumn, threads, streamBatchSize);
             }
             case "kafka" -> {
                 String topic = source != null ? source : (String) params.get("topic");
@@ -414,7 +419,7 @@ public class JobService {
 
     private String extractSource(ExtractorConfig config) {
         return switch (config) {
-            case JdbcExtractorConfig jdbc -> jdbc.sqlQuery();
+            case JdbcExtractorConfig jdbc -> jdbc.sqlQuery().orElse(jdbc.table().orElse(""));
             case KafkaExtractorConfig kafka -> kafka.topic();
         };
     }

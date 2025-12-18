@@ -1,0 +1,31 @@
+{
+  "type": "record",
+  "name": "TypeConversionBinaryTest",
+  "namespace": "ru.pospelov.etl.avro",
+  "fields": [
+    {
+      "name": "id",
+      "type": "int"
+    },
+    {
+      "name": "binary_empty",
+      "type": "bytes"
+    },
+    {
+      "name": "binary_small",
+      "type": "bytes"
+    },
+    {
+      "name": "binary_large",
+      "type": "bytes"
+    },
+    {
+      "name": "binary_null",
+      "type": [
+        "null",
+        "bytes"
+      ],
+      "default": null
+    }
+  ]
+}

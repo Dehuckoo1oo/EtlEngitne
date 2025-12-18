@@ -1,9 +1,9 @@
 package ru.pospelov.etl.engine.steps.extractor.jdbc;
 
 import org.springframework.jdbc.core.JdbcTemplate;
-import ru.pospelov.etl.engine.model.EtlRecord;
+import ru.pospelov.etl.engine.conversion.TypeConverter;
+import ru.pospelov.etl.engine.model.EtlBatch;
 
-import java.util.Collection;
 import java.util.function.Consumer;
 
 /**
@@ -17,20 +17,26 @@ final class JdbcPartitionQueryTask implements Runnable {
     private final int part;
     private final int streamBatchSize;
     private final String keyColumn;
-    private final Consumer<Collection<EtlRecord>> batchConsumer;
+    private final Consumer<EtlBatch> batchConsumer;
+    private final TypeConverter typeConverter;
+    private final String jobId;
 
     JdbcPartitionQueryTask(JdbcTemplate jdbcTemplate,
                            String query,
                            int part,
                            int streamBatchSize,
                            String keyColumn,
-                           Consumer<Collection<EtlRecord>> batchConsumer) {
+                           Consumer<EtlBatch> batchConsumer,
+                           TypeConverter typeConverter,
+                           String jobId) {
         this.jdbcTemplate = jdbcTemplate;
         this.query = query;
         this.part = part;
         this.streamBatchSize = streamBatchSize;
         this.keyColumn = keyColumn;
         this.batchConsumer = batchConsumer;
+        this.typeConverter = typeConverter;
+        this.jobId = jobId;
     }
 
     @Override
@@ -39,7 +45,9 @@ final class JdbcPartitionQueryTask implements Runnable {
                 "sql-part-" + part,
                 streamBatchSize,
                 keyColumn,
-                batchConsumer
+                batchConsumer,
+                typeConverter,
+                jobId
         );
         jdbcTemplate.query(query, extractor);
     }

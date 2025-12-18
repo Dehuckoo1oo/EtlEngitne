@@ -15,6 +15,7 @@ import ru.pospelov.etl.engine.config.extractor.KafkaExtractorConfig;
 import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
 import ru.pospelov.etl.engine.exception.EtlException;
 import ru.pospelov.etl.engine.exception.ExtractionException;
+import ru.pospelov.etl.engine.model.EtlBatch;
 import ru.pospelov.etl.engine.model.EtlRecord;
 
 import java.time.Duration;
@@ -36,7 +37,7 @@ public class KafkaPartitionExtractor {
     public void extract(
             KafkaExtractorConfig config,
             String jobId,
-            Consumer<Collection<EtlRecord>> batchConsumer
+            Consumer<EtlBatch> batchConsumer
     ) {
         // Type-safe access
         String topic = config.topic();
@@ -101,7 +102,7 @@ public class KafkaPartitionExtractor {
             long startMillis,
             long endMillis,
             int streamBatchSize,
-            Consumer<Collection<EtlRecord>> batchConsumer
+            Consumer<EtlBatch> batchConsumer
     ) {
         try (KafkaConsumer<String, Object> consumer = new KafkaConsumer<>(consumerProps)) {
             consumer.assign(List.of(tp));
@@ -124,7 +125,7 @@ public class KafkaPartitionExtractor {
                     if (record.timestamp() > endMillis) {
                         // Send remaining batch before exiting
                         if (!currentBatch.isEmpty()) {
-                            batchConsumer.accept(new ArrayList<>(currentBatch));
+                            batchConsumer.accept(new EtlBatch(new ArrayList<>(currentBatch), null));
                         }
                         return;
                     }
@@ -135,19 +136,21 @@ public class KafkaPartitionExtractor {
                             record.offset()
                     );
                     if (record.key() != null) {
-                        etlRecord.put("key", record.key());
+                        // Use __kafka_key to avoid conflict with real data columns named "key"
+                        etlRecord.put("__kafka_key", record.key());
                     }
                     if (record.value() == null) {
                         // Skip tombstone/null payloads to avoid downstream NPEs
                         continue;
                     }
-                    etlRecord.put("value", record.value());
+                    // Use __kafka_value to avoid conflict with real data columns named "value"
+                    etlRecord.put("__kafka_value", record.value());
 
                     currentBatch.add(etlRecord);
 
                     // When batch is full, send it for processing immediately
                     if (currentBatch.size() >= streamBatchSize) {
-                        batchConsumer.accept(new ArrayList<>(currentBatch));
+                        batchConsumer.accept(new EtlBatch(new ArrayList<>(currentBatch), null));
                         currentBatch.clear();
                     }
                 }
@@ -155,7 +158,7 @@ public class KafkaPartitionExtractor {
 
             // Send remaining records
             if (!currentBatch.isEmpty()) {
-                batchConsumer.accept(new ArrayList<>(currentBatch));
+                batchConsumer.accept(new EtlBatch(currentBatch, null));
             }
         } catch (Exception e) {
             throw new ExtractionException(

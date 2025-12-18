@@ -1,0 +1,290 @@
+Отлично! Я завершил анализ проблемы и создал детальный план исправления.
+
+  Краткое резюме
+
+  Найдено две критические ошибки (P0), блокирующие тесты:
+
+  1. SqlVariantQueryGenerator - неправильный парсинг 3-частных имен таблиц
+
+  - Тесты используют "SUPPORT.dbo.type_conversion_src"
+  - Код делит только на первой точке → schema="SUPPORT" (неправильно)
+  - INFORMATION_SCHEMA не находит колонки → fallback SELECT * → sql_variant не обрабатывается
+
+  2. AvroToRecordTransformer - отсутствие precision/scale в ColumnMetadata
+
+  - При создании метаданных из Avro схемы hardcoded precision=0, scale=0
+  - SQL Server bulk copy падает: "Length or precision specification 0 is invalid"
+
+  Решение
+
+  1. Исправить парсинг таблиц: split("\\.") + взять последние 2 части (schema, table)
+  2. Извлечь precision/scale: из LogicalTypes.Decimal при создании ColumnMetadata
+
+  Детальный план с кодом находится в файле плана. Оценка времени: 15-20 минут.
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Ready to code?
+
+ Here is Claude's plan:
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ План исправления TypeConversionIntegrationTest
+
+ Диагноз проблемы
+
+ После детального анализа выявлено две критические ошибки (P0), которые полностью блокируют выполнение интеграционных тестов:
+
+ Проблема 1: Неправильный парсинг 3-частных имен таблиц (PRIMARY BLOCKER)
+
+ Файл: src/main/java/ru/pospelov/etl/engine/steps/extractor/jdbc/SqlVariantQueryGenerator.java
+ Строки: 56-59
+
+ Текущий код:
+ if (tableName.contains(".")) {
+     String[] parts = tableName.split("\\.", 2);  // Разделяет только на ПЕРВОЙ точке
+     schema = parts[0];  // "SUPPORT" ← НЕПРАВИЛЬНО
+     table = parts[1];   // "dbo.type_conversion_src" ← НЕПРАВИЛЬНО
+ }
+
+ Что происходит:
+ - Тесты используют полное имя таблицы: "SUPPORT.dbo.type_conversion_src"
+ - Код делит строку на первой точке: ["SUPPORT", "dbo.type_conversion_src"]
+ - В результате schema="SUPPORT", table="dbo.type_conversion_src"
+
+ Запрос к INFORMATION_SCHEMA:
+ WHERE TABLE_SCHEMA = 'SUPPORT' AND TABLE_NAME = 'dbo.type_conversion_src'
+ ☠️ Результат: 0 строк (схема "SUPPORT" не существует, это имя базы данных)
+
+ Каскадный эффект:
+ 1. queryInformationSchema() возвращает пустой список
+ 2. Генерируется fallback SELECT * FROM SUPPORT.dbo.type_conversion_src
+ 3. SQL_VARIANT_PROPERTY колонки не добавляются
+ 4. JdbcStreamingResultSetExtractor не может определить sql_variant колонки
+ 5. Колонка variant_col читается как raw Java тип (Integer, String)
+ 6. TypeConverter падает: "Cannot convert Integer to Avro STRING"
+
+ ---
+ Проблема 2: Отсутствие precision/scale в ColumnMetadata из Avro
+
+ Файл: src/main/java/ru/pospelov/etl/engine/steps/transformer/AvroToRecordTransformer.java
+ Строки: 68-75
+
+ Текущий код:
+ metadata.put(field.name(), new ColumnMetadata(
+     field.name(),
+     jdbcType,
+     sqlTypeName,
+     0, // precision - hardcoded 0 ← ПРОБЛЕМА
+     0, // scale - hardcoded 0 ← ПРОБЛЕМА
+     field.schema().isNullable()
+ ));
+
+ Что происходит:
+ - При чтении из Kafka (Avro), ColumnMetadata создается без precision/scale
+ - Для DECIMAL полей это критично: DECIMAL(0,0) невалиден
+ - SQL Server bulk copy падает: "Length or precision specification 0 is invalid"
+
+ Корректное поведение:
+ - Для Avro decimal logical type нужно извлекать precision и scale из LogicalTypes.Decimal
+ - Для других типов можно оставить 0
+
+ ---
+ Решение
+
+ Исправление 1: SqlVariantQueryGenerator - правильный парсинг таблиц
+
+ Задача: Корректно обрабатывать имена таблиц в форматах:
+ - "table" → schema="dbo", table="table"
+ - "schema.table" → schema="schema", table="table"
+ - "database.schema.table" → schema="schema", table="table" (игнорируем database, т.к. подключение уже к нужной БД)
+
+ Реализация (строки 51-60):
+
+ public String generateSelectQuery(String tableName) {
+     // Parse schema and table name (supports database.schema.table format)
+     String schema = "dbo"; // default schema for SQL Server
+     String table = tableName;
+
+     if (tableName.contains(".")) {
+         String[] parts = tableName.split("\\.");
+         if (parts.length == 2) {
+             // Format: schema.table
+             schema = parts[0];
+             table = parts[1];
+         } else if (parts.length >= 3) {
+             // Format: database.schema.table (or more parts)
+             // Take second-to-last as schema, last as table
+             schema = parts[parts.length - 2];
+             table = parts[parts.length - 1];
+         }
+     }
+
+     log.debug("Generating SELECT query for table: schema={}, table={} (original={})",
+               schema, table, tableName);
+
+ Примеры работы:
+ - "type_conversion_src" → schema="dbo", table="type_conversion_src"
+ - "dbo.type_conversion_src" → schema="dbo", table="type_conversion_src"
+ - "SUPPORT.dbo.type_conversion_src" → schema="dbo", table="type_conversion_src" ✅
+
+ Тестовое покрытие:
+ - Добавить unit-тест с 3-частным именем таблицы
+ - Проверить, что INFORMATION_SCHEMA запрос возвращает колонки
+
+ ---
+ Исправление 2: AvroToRecordTransformer - извлечение precision/scale
+
+ Задача: Для Avro decimal logical type извлекать precision и scale из схемы
+
+ Реализация (изменить метод buildMetadataFromAvroSchema, строки 60-79):
+
+ private Map<String, ColumnMetadata> buildMetadataFromAvroSchema(Schema avroSchema) {
+     Map<String, ColumnMetadata> metadata = new LinkedHashMap<>();
+
+     for (Schema.Field field : avroSchema.getFields()) {
+         Schema fieldSchema = unwrapNullable(field.schema());
+         String sqlTypeName = avroTypeToSqlTypeName(fieldSchema);
+         int jdbcType = sqlTypeNameToJdbcType(sqlTypeName);
+
+         // Extract precision and scale for decimal types
+         int precision = 0;
+         int scale = 0;
+         LogicalType logicalType = fieldSchema.getLogicalType();
+         if (logicalType instanceof LogicalTypes.Decimal decimalType) {
+             precision = decimalType.getPrecision();
+             scale = decimalType.getScale();
+         }
+
+         metadata.put(field.name(), new ColumnMetadata(
+             field.name(),
+             jdbcType,
+             sqlTypeName,
+             precision,  // Now extracts from Avro decimal
+             scale,      // Now extracts from Avro decimal
+             field.schema().isNullable()
+         ));
+     }
+
+     return metadata;
+ }
+
+ Обоснование:
+ - Avro decimal хранит precision/scale в LogicalTypes.Decimal
+ - Без этих значений SQL Server не может создать корректный DECIMAL тип для bulk copy
+ - Для остальных типов precision/scale = 0 корректен (например, для INT, VARCHAR без указания длины)
+
+ ---
+ Критические файлы для изменения
+
+ 1. src/main/java/ru/pospelov/etl/engine/steps/extractor/jdbc/SqlVariantQueryGenerator.java
+   - Метод: generateSelectQuery(String tableName) (строки 51-70)
+   - Изменение: Алгоритм парсинга имени таблицы
+ 2. src/main/java/ru/pospelov/etl/engine/steps/transformer/AvroToRecordTransformer.java
+   - Метод: buildMetadataFromAvroSchema(Schema avroSchema) (строки 60-79)
+   - Изменение: Извлечение precision/scale из Avro decimal
+
+ ---
+ План выполнения
+
+ Шаг 1: Исправить SqlVariantQueryGenerator (5 минут)
+
+ 1. Открыть SqlVariantQueryGenerator.java
+ 2. Найти метод generateSelectQuery (строка 51)
+ 3. Заменить логику парсинга имени таблицы (строки 56-59) на поддержку 3-частных имен
+ 4. Добавить debug-лог с исходным именем таблицы
+
+ Шаг 2: Исправить AvroToRecordTransformer (5 минут)
+
+ 1. Открыть AvroToRecordTransformer.java
+ 2. Найти метод buildMetadataFromAvroSchema (строка 60)
+ 3. Добавить извлечение precision/scale для Avro decimal (после строки 66)
+ 4. Передать эти значения в конструктор ColumnMetadata
+
+ Шаг 3: Запустить тесты (1-2 минуты)
+
+ 1. Запустить TypeConversionIntegrationTest из IntelliJ IDEA
+ 2. Проверить успешное выполнение всех 6 тестов:
+   - dateConversion_cornerCases_shouldPreserveExactValues
+   - decimalConversion_precisionAndScale_shouldPreserveExactly
+   - sqlVariantConversion_differentBaseTypes_shouldPreserveTypesAndValues
+   - nullValues_allTypes_shouldPreserveNulls
+   - binaryConversion_shouldPreserveExactBytes
+   - uniqueidentifierConversion_shouldPreserveExactGuid
+
+ ---
+ Ожидаемый результат
+
+ После исправлений:
+
+ ✅ SqlVariantQueryGenerator корректно парсит SUPPORT.dbo.type_conversion_src:
+ - schema = "dbo"
+ - table = "type_conversion_src"
+ - INFORMATION_SCHEMA запрос возвращает все колонки
+ - SQL_VARIANT_PROPERTY колонки добавляются в генерируемый SELECT
+
+ ✅ AvroToRecordTransformer создает ColumnMetadata с правильным precision/scale:
+ - Для DECIMAL(18,2): precision=18, scale=2
+ - Для DECIMAL(38,10): precision=38, scale=10
+ - SQL Server bulk copy успешно вставляет данные
+
+ ✅ Все 6 тестов TypeConversionIntegrationTest проходят:
+ - nullValues: PASS (уже проходит в логах)
+ - dateConversion: PASS (уже проходит в логах)
+ - decimalConversion: PASS (сейчас падает на bulk insert)
+ - binaryConversion: PASS (сейчас падает на bulk insert)
+ - guidConversion: PASS (уже проходит в логах)
+ - sqlVariantConversion: PASS (сейчас падает на TypeConverter)
+
+ ---
+ Дополнительные наблюдения
+
+ Тесты, которые уже проходят (из логов):
+
+ 1. nullValues_allTypes_shouldPreserveNulls - ✅ PASS
+ 2. dateConversion_cornerCases_shouldPreserveExactValues - ✅ PASS
+ 3. uniqueidentifierConversion_shouldPreserveExactGuid - ✅ PASS
+
+ Тесты, которые падают:
+
+ 1. decimalConversion_precisionAndScale_shouldPreserveExactly - ❌ "Length or precision specification 0 is invalid"
+ 2. binaryConversion_shouldPreserveExactBytes - ❌ "Length or precision specification 0 is invalid"
+ 3. sqlVariantConversion_differentBaseTypes_shouldPreserveTypesAndValues - ❌ "Cannot convert Integer to Avro STRING"
+
+ Почему одни тесты проходят, а другие нет?
+
+ Проходят:
+ - Используют простые типы (DATE, UNIQUEIDENTIFIER, NULL), которые не требуют precision/scale
+ - Не используют sql_variant колонки
+
+ Падают:
+ - decimalConversion: требует precision/scale для DECIMAL типов
+ - binaryConversion: вероятно, также требует metadata для VARBINARY
+ - sqlVariantConversion: требует корректной обработки sql_variant → SqlVariantValue
+
+ ---
+ Оценка времени
+
+ - Исправление кода: 10-15 минут
+ - Запуск и проверка тестов: 2-3 минуты
+ - Итого: ~15-20 минут
+
+ ---
+ Риски
+
+ Низкий риск:
+ - Изменения локализованы в двух методах
+ - Не влияют на основной flow обработки данных
+ - Обратная совместимость сохраняется (2-частные имена таблиц работают как прежде)
+
+ Потенциальная проблема:
+ - Если есть другие места, где используются 3-частные имена таблиц, нужно проверить их работу
+ - Но в тестах это единственное место
+
+ ---
+ Проверка после исправления
+
+ 1. Запустить TypeConversionIntegrationTest - все 6 тестов должны пройти
+ 2. Запустить KafkaToSqlIntegrationTest - проверить, что не сломали существующую функциональность
+ 3. Проверить логи:
+   - Должен появиться лог: "Generating SELECT query for table: schema=dbo, table=type_conversion_src (original=SUPPORT.dbo.type_conversion_src)"
+   - Не должно быть предупреждений: "No columns found for table..."
+   - Не должно быть ошибок: "Length or precision specification 0 is invalid"

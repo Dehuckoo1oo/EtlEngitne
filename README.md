@@ -143,6 +143,58 @@ Batch 3: Extract → Transform → Load
 
 ---
 
+## Поддержка типов данных
+
+### SQL Server ↔ Avro Type Conversion
+
+Engine поддерживает полную конвертацию типов между SQL Server, Java и Avro:
+
+**Основные типы:**
+- Числовые: `INT`, `BIGINT`, `DECIMAL(p,s)`, `MONEY`
+- Строковые: `NVARCHAR`, `VARCHAR`, `CHAR`
+- Даты/время: `DATE`, `DATETIME2`, `TIME`
+- Бинарные: `VARBINARY`, `BINARY`
+- Специальные: `UNIQUEIDENTIFIER`, `SQL_VARIANT`
+
+**Подробная матрица типов:** См. [`doc/type-conversion.md`](doc/type-conversion.md)
+
+### SQL_VARIANT Support
+
+Engine полностью поддерживает SQL Server тип `SQL_VARIANT`:
+
+**Table-based конфигурация (автоматическая):**
+```java
+Map.of(
+    "extractorType", "sql",
+    "table", "dbo.orders",        // Автогенерация SQL_VARIANT_PROPERTY
+    "threads", 4
+)
+```
+
+**Custom query (ручная):**
+```sql
+SELECT
+  id,
+  variant_col,
+  -- Обязательные метаданные для sql_variant колонок:
+  SQL_VARIANT_PROPERTY(variant_col, 'BaseType') as __variant_variant_col_basetype,
+  SQL_VARIANT_PROPERTY(variant_col, 'Precision') as __variant_variant_col_precision,
+  SQL_VARIANT_PROPERTY(variant_col, 'Scale') as __variant_variant_col_scale,
+  SQL_VARIANT_PROPERTY(variant_col, 'MaxLength') as __variant_variant_col_maxlength
+FROM orders
+```
+
+**Валидация:**
+- Table-based режим: автоматическая генерация метаданных
+- Custom query: валидация при старте, детальные инструкции при ошибке
+- Поддержка разных базовых типов в разных строках
+
+**Known Limitations:**
+- При bulk copy `VARCHAR → NVARCHAR`, `CHAR → NCHAR` (функционально эквивалентно)
+- См. детали в [`doc/type-conversion-requirements.md`](doc/type-conversion-requirements.md)
+
+---
+
 ## Производительность
 
 | Цепочка | Throughput | Примечания |

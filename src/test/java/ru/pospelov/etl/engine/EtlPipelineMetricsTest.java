@@ -50,13 +50,13 @@ class EtlPipelineMetricsTest {
         EtlRecord second = new EtlRecord(Instant.now(), "test", 2L);
 
         doAnswer(invocation -> {
-            Consumer<Collection<EtlRecord>> consumer = invocation.getArgument(1);
-            consumer.accept(List.of(first, second));
+            Consumer<ru.pospelov.etl.engine.model.EtlBatch> consumer = invocation.getArgument(1);
+            consumer.accept(new ru.pospelov.etl.engine.model.EtlBatch(List.of(first, second), null));
             return null;
         }).when(componentFactory).extract(eq(job), any());
 
         when(componentFactory.transform(eq(job), any()))
-                .thenAnswer(invocation -> invocation.<Collection<EtlRecord>>getArgument(1));
+                .thenAnswer(invocation -> invocation.<ru.pospelov.etl.engine.model.EtlBatch>getArgument(1));
         doNothing().when(componentFactory).load(eq(job), any());
 
         EtlPipeline pipeline = new EtlPipelineFactory(componentFactory, deadLetterQueue, collector).createStreamingEtlPipeline();
@@ -89,8 +89,8 @@ class EtlPipelineMetricsTest {
         EtlRecord second = new EtlRecord(Instant.now(), "test", 2L);
 
         doAnswer(invocation -> {
-            Consumer<Collection<EtlRecord>> consumer = invocation.getArgument(1);
-            consumer.accept(List.of(first, second));
+            Consumer<ru.pospelov.etl.engine.model.EtlBatch> consumer = invocation.getArgument(1);
+            consumer.accept(new ru.pospelov.etl.engine.model.EtlBatch(List.of(first, second), null));
             return null;
         }).when(componentFactory).extract(eq(job), any());
 
@@ -117,12 +117,13 @@ class EtlPipelineMetricsTest {
 
     private EtlJob createJob(String jobId) {
         JdbcExtractorConfig extractorConfig = new JdbcExtractorConfig(
-                "SELECT 1",
-                Optional.empty(),
-                1,
-                Optional.empty(),
-                1,
-                1_000
+                Optional.of("SELECT 1"),
+                Optional.empty(), // table
+                Optional.empty(), // partitionColumn
+                1, // partitions
+                Optional.empty(), // keyColumn
+                1, // threads
+                1_000 // streamBatchSize
         );
         NoopTransformerConfig transformerConfig = new NoopTransformerConfig();
         JdbcLoaderConfig loaderConfig = new JdbcLoaderConfig("target_table", 1_000);

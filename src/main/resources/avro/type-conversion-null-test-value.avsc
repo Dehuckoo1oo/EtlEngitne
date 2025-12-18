@@ -1,0 +1,59 @@
+{
+  "type": "record",
+  "name": "TypeConversionNullTest",
+  "namespace": "ru.pospelov.etl.avro",
+  "fields": [
+    {
+      "name": "id",
+      "type": "int"
+    },
+    {
+      "name": "int_null",
+      "type": [
+        "null",
+        "int"
+      ],
+      "default": null
+    },
+    {
+      "name": "varchar_null",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "decimal_null",
+      "type": [
+        "null",
+        {
+          "type": "bytes",
+          "logicalType": "decimal",
+          "precision": 18,
+          "scale": 2
+        }
+      ],
+      "default": null
+    },
+    {
+      "name": "date_null",
+      "type": [
+        "null",
+        {
+          "type": "int",
+          "logicalType": "date"
+        }
+      ],
+      "default": null
+    },
+    {
+      "name": "binary_null",
+      "type": [
+        "null",
+        "bytes"
+      ],
+      "default": null
+    }
+  ]
+}

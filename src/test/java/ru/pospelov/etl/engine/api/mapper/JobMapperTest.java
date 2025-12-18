@@ -40,10 +40,11 @@ class JobMapperTest {
     void toEntity_shouldConvertEtlJobToJobEntity() {
         // Given
         JdbcExtractorConfig extractorConfig = new JdbcExtractorConfig(
-                "SELECT * FROM test_table",
-                Optional.empty(),
+                Optional.of("SELECT * FROM test_table"),
+                Optional.empty(), // table
+                Optional.empty(), // partitionColumn
                 1,
-                Optional.empty(),
+                Optional.empty(), // keyColumn
                 4,
                 1000
         );
@@ -114,10 +115,11 @@ class JobMapperTest {
     void toEtlJob_shouldConvertJobEntityToEtlJob() throws Exception {
         // Given
         JdbcExtractorConfig extractorConfig = new JdbcExtractorConfig(
-                "SELECT * FROM orders",
-                Optional.empty(),
+                Optional.of("SELECT * FROM orders"),
+                Optional.empty(), // table
+                Optional.empty(), // partitionColumn
                 1,
-                Optional.empty(),
+                Optional.empty(), // keyColumn
                 8,
                 1000
         );
@@ -159,7 +161,7 @@ class JobMapperTest {
         // Проверяем конфигурации
         assertTrue(etlJob.extractorConfig() instanceof JdbcExtractorConfig);
         JdbcExtractorConfig jdbcConfig = (JdbcExtractorConfig) etlJob.extractorConfig();
-        assertEquals("SELECT * FROM orders", jdbcConfig.sqlQuery());
+        assertEquals("SELECT * FROM orders", jdbcConfig.sqlQuery().orElse(""));
         assertEquals(8, jdbcConfig.threads());
 
         assertTrue(etlJob.transformerConfig() instanceof NoopTransformerConfig);
@@ -190,10 +192,11 @@ class JobMapperTest {
     void updateEntity_shouldUpdateOnlyRelevantFields() throws Exception {
         // Given
         JdbcExtractorConfig originalExtractorConfig = new JdbcExtractorConfig(
-                "SELECT * FROM old_table",
-                Optional.empty(),
+                Optional.of("SELECT * FROM old_table"),
+                Optional.empty(), // table
+                Optional.empty(), // partitionColumn
                 1,
-                Optional.empty(),
+                Optional.empty(), // keyColumn
                 4,
                 1000
         );
@@ -267,10 +270,11 @@ class JobMapperTest {
     void roundTrip_shouldPreserveData() {
         // Given
         JdbcExtractorConfig extractorConfig = new JdbcExtractorConfig(
-                "SELECT id, name, value FROM source_table WHERE date > '2024-01-01'",
-                Optional.of("id"),
+                Optional.of("SELECT id, name, value FROM source_table WHERE date > '2024-01-01'"),
+                Optional.empty(), // table
+                Optional.of("id"), // partitionColumn
                 8,
-                Optional.of("id"),
+                Optional.of("id"), // keyColumn
                 8,
                 50000
         );

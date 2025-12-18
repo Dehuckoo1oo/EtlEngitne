@@ -1,9 +1,9 @@
 package ru.pospelov.etl.engine.steps.extractor.jdbc;
 
 import org.springframework.jdbc.core.JdbcTemplate;
-import ru.pospelov.etl.engine.model.EtlRecord;
+import ru.pospelov.etl.engine.conversion.TypeConverter;
+import ru.pospelov.etl.engine.model.EtlBatch;
 
-import java.util.Collection;
 import java.util.function.Consumer;
 
 /**
@@ -16,20 +16,26 @@ final class JdbcOffsetQueryTask implements Runnable {
     private final int offset;
     private final int streamBatchSize;
     private final String keyColumn;
-    private final Consumer<Collection<EtlRecord>> batchConsumer;
+    private final Consumer<EtlBatch> batchConsumer;
+    private final TypeConverter typeConverter;
+    private final String jobId;
 
     JdbcOffsetQueryTask(JdbcTemplate jdbcTemplate,
                         String baseQuery,
                         int offset,
                         int streamBatchSize,
                         String keyColumn,
-                        Consumer<Collection<EtlRecord>> batchConsumer) {
+                        Consumer<EtlBatch> batchConsumer,
+                        TypeConverter typeConverter,
+                        String jobId) {
         this.jdbcTemplate = jdbcTemplate;
         this.baseQuery = baseQuery;
         this.offset = offset;
         this.streamBatchSize = streamBatchSize;
         this.keyColumn = keyColumn;
         this.batchConsumer = batchConsumer;
+        this.typeConverter = typeConverter;
+        this.jobId = jobId;
     }
 
     @Override
@@ -41,7 +47,9 @@ final class JdbcOffsetQueryTask implements Runnable {
                 "sql",
                 streamBatchSize,
                 keyColumn,
-                batchConsumer
+                batchConsumer,
+                typeConverter,
+                jobId
         );
         jdbcTemplate.query(pagedQuery, extractor);
     }

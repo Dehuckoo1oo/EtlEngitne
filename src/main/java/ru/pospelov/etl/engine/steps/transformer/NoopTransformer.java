@@ -1,17 +1,27 @@
 package ru.pospelov.etl.engine.steps.transformer;
 
 import org.springframework.stereotype.Component;
-import ru.pospelov.etl.engine.model.EtlRecord;
+import ru.pospelov.etl.engine.model.EtlBatch;
+import ru.pospelov.etl.engine.model.EtlJob;
 
-import java.util.Collection;
-
+/**
+ * No-operation transformer that returns batches unchanged.
+ *
+ * <p>This transformer is used when no transformation is needed,
+ * passing data directly from extractor to loader while preserving
+ * all records and metadata.
+ */
 @Component
-public class NoopTransformer {
+public class NoopTransformer implements Transformer {
 
-    /**
-     * No-operation transformer - returns records unchanged.
-     */
-    public Collection<EtlRecord> transform(Collection<EtlRecord> etlRecords) {
-        return etlRecords;
+    @Override
+    public EtlBatch transform(EtlBatch batch, EtlJob job) {
+        // Pass through unchanged - preserve both records and metadata
+        return batch;
+    }
+
+    @Override
+    public String getType() {
+        return "noop";
     }
 }

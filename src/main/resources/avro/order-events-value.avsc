@@ -1,0 +1,158 @@
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "namespace": "ru.pospelov.etl.avro",
+  "fields": [
+    {
+      "name": "order_id",
+      "type": "string"
+    },
+    {
+      "name": "customer_id",
+      "type": "string"
+    },
+    {
+      "name": "order_date",
+      "type": "string"
+    },
+    {
+      "name": "delivery_date",
+      "type": [
+        "null",
+        {
+          "type": "int",
+          "logicalType": "date"
+        }
+      ],
+      "default": null
+    },
+    {
+      "name": "status",
+      "type": "string"
+    },
+    {
+      "name": "total_amount",
+      "type": "double"
+    },
+    {
+      "name": "currency",
+      "type": "string"
+    },
+    {
+      "name": "item_count",
+      "type": "int"
+    },
+    {
+      "name": "shipping_address",
+      "type": "string"
+    },
+    {
+      "name": "billing_address",
+      "type": "string"
+    },
+    {
+      "name": "shipping_zip",
+      "type": "string"
+    },
+    {
+      "name": "billing_zip",
+      "type": "string"
+    },
+    {
+      "name": "shipping_city",
+      "type": "string"
+    },
+    {
+      "name": "billing_city",
+      "type": "string"
+    },
+    {
+      "name": "shipping_country",
+      "type": "string"
+    },
+    {
+      "name": "billing_country",
+      "type": "string"
+    },
+    {
+      "name": "payment_method",
+      "type": "string"
+    },
+    {
+      "name": "card_last_digits",
+      "type": "string"
+    },
+    {
+      "name": "card_expiry",
+      "type": "string"
+    },
+    {
+      "name": "ip_address",
+      "type": "string"
+    },
+    {
+      "name": "user_agent",
+      "type": "string"
+    },
+    {
+      "name": "campaign_id",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "referrer_url",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "device_type",
+      "type": "string"
+    },
+    {
+      "name": "browser",
+      "type": "string"
+    },
+    {
+      "name": "os",
+      "type": "string"
+    },
+    {
+      "name": "coupon_code",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "discount_amount",
+      "type": [
+        "null",
+        "double"
+      ],
+      "default": null
+    },
+    {
+      "name": "loyalty_points_used",
+      "type": "int"
+    },
+    {
+      "name": "gift_wrap",
+      "type": "boolean"
+    },
+    {
+      "name": "special_instructions",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    }
+  ]
+}

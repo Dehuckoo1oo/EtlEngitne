@@ -5,19 +5,21 @@ import org.springframework.stereotype.Component;
 import ru.pospelov.etl.engine.config.extractor.*;
 import ru.pospelov.etl.engine.config.transformer.*;
 import ru.pospelov.etl.engine.config.loader.*;
+import ru.pospelov.etl.engine.model.EtlBatch;
 import ru.pospelov.etl.engine.model.EtlJob;
-import ru.pospelov.etl.engine.model.EtlRecord;
 import ru.pospelov.etl.engine.steps.extractor.jdbc.JdbcExtractor;
 import ru.pospelov.etl.engine.steps.extractor.kafka.KafkaPartitionExtractor;
 import ru.pospelov.etl.engine.steps.transformer.*;
 import ru.pospelov.etl.engine.steps.loader.*;
 
-import java.util.Collection;
 import java.util.function.Consumer;
 
 /**
  * Centralized factory for creating and running ETL components.
  * Uses exhaustive pattern matching for type-safe dispatching.
+ *
+ * <p>All methods now use EtlBatch instead of Collection<EtlRecord>
+ * to support batch-level metadata (e.g., JDBC column metadata).
  */
 @Component
 @RequiredArgsConstructor
@@ -37,8 +39,11 @@ public class EtlComponentFactory {
     /**
      * Extract data using extractor configuration.
      * Pattern matching guarantees handling of all types.
+     *
+     * @param job the ETL job
+     * @param batchConsumer consumer that receives extracted batches
      */
-    public void extract(EtlJob job, Consumer<Collection<EtlRecord>> batchConsumer) {
+    public void extract(EtlJob job, Consumer<EtlBatch> batchConsumer) {
         switch (job.extractorConfig()) {
             case JdbcExtractorConfig config ->
                 jdbcExtractor.extract(config, job.jobId(), batchConsumer);
@@ -53,33 +58,40 @@ public class EtlComponentFactory {
 
     /**
      * Transform data using transformer configuration.
+     *
+     * @param job the ETL job
+     * @param batch input batch
+     * @return transformed batch
      */
-    public Collection<EtlRecord> transform(EtlJob job, Collection<EtlRecord> records) {
+    public EtlBatch transform(EtlJob job, EtlBatch batch) {
         return switch (job.transformerConfig()) {
             case NoopTransformerConfig config ->
-                noopTransformer.transform(records);
+                noopTransformer.transform(batch, job);
 
             case AvroToRecordTransformerConfig config ->
-                avroToRecordTransformer.transform(records);
+                avroToRecordTransformer.transform(batch);
 
             case RecordToAvroTransformerConfig config ->
-                recordToAvroTransformer.transform(records, config);
+                recordToAvroTransformer.transform(batch, config);
         };
     }
 
     /**
      * Load data using loader configuration.
+     *
+     * @param job the ETL job
+     * @param batch batch to load
      */
-    public void load(EtlJob job, Collection<EtlRecord> records) {
+    public void load(EtlJob job, EtlBatch batch) {
         switch (job.loaderConfig()) {
             case JdbcLoaderConfig config ->
-                jdbcLoader.load(config, job.jobId(), records);
+                jdbcLoader.load(config, job.jobId(), batch);
 
             case FastSqlLoaderConfig config ->
-                fastSqlLoader.load(config, job.jobId(), records);
+                fastSqlLoader.load(config, job.jobId(), batch);
 
             case KafkaLoaderConfig config ->
-                kafkaByPartitionLoader.load(config, job.jobId(), records);
+                kafkaByPartitionLoader.load(config, job.jobId(), batch);
         }
     }
 }

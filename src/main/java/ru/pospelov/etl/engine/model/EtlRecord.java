@@ -6,14 +6,14 @@ import lombok.ToString;
 
 import java.time.Instant;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 @AllArgsConstructor
 @Getter
 @ToString
 public class EtlRecord {
-    private final Map<String, Object> fields = new ConcurrentHashMap<>();
+    private final Map<String, Object> fields = new HashMap<>();
     private final Instant timestamp;
     private final String sourcePartition;
     private final long offset;

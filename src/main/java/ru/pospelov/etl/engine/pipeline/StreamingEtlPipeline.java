@@ -10,12 +10,11 @@ import ru.pospelov.etl.engine.exception.TransformationException;
 import ru.pospelov.etl.engine.metrics.EtlMetricsCollector;
 import ru.pospelov.etl.engine.metrics.EtlJobStatus;
 import ru.pospelov.etl.engine.metrics.EtlMetrics;
+import ru.pospelov.etl.engine.model.EtlBatch;
 import ru.pospelov.etl.engine.model.EtlJob;
-import ru.pospelov.etl.engine.model.EtlRecord;
 import ru.pospelov.etl.engine.support.CancellationToken;
 import ru.pospelov.etl.engine.support.DeadLetterQueue;
 
-import java.util.Collection;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
@@ -84,7 +83,7 @@ final class StreamingEtlPipeline implements EtlPipeline {
                     cancellationToken.checkCancellation();
 
                     int batchNum = batchCounter.incrementAndGet();
-                    int extractedCount = extractedBatch.size();
+                    int extractedCount = extractedBatch.getRecords().size();
                     totalExtracted.addAndGet(extractedCount);
 
                     boolean shouldUpdateMetrics = (batchNum <= 10) || (batchNum % 10 == 0);
@@ -101,11 +100,11 @@ final class StreamingEtlPipeline implements EtlPipeline {
                     long transformStartNanos = System.nanoTime();
                     metrics.onTransformStart(job, extractedCount);
 
-                    Collection<EtlRecord> transformedBatch = transformBatch(job, extractedBatch);
+                    EtlBatch transformedBatch = transformBatch(job, extractedBatch);
 
                     cancellationToken.checkCancellation();
 
-                    int transformedCount = transformedBatch.size();
+                    int transformedCount = transformedBatch.getRecords().size();
                     totalTransformed.addAndGet(transformedCount);
                     long transformDurationMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - transformStartNanos);
                     totalTransformDurationMillis.addAndGet(transformDurationMillis);
@@ -119,7 +118,7 @@ final class StreamingEtlPipeline implements EtlPipeline {
                                 job.jobId(), batchNum, transformedCount, transformDurationMillis);
                     }
 
-                    if (!transformedBatch.isEmpty()) {
+                    if (!transformedBatch.getRecords().isEmpty()) {
                         long loadStartNanos = System.nanoTime();
                         metrics.onLoadStart(job, transformedCount);
 
@@ -173,8 +172,8 @@ final class StreamingEtlPipeline implements EtlPipeline {
         }
     }
 
-    private Collection<EtlRecord> transformBatch(EtlJob job, Collection<EtlRecord> batch) {
-        if (batch.isEmpty()) {
+    private EtlBatch transformBatch(EtlJob job, EtlBatch batch) {
+        if (batch.getRecords().isEmpty()) {
             return batch;
         }
 
@@ -192,8 +191,8 @@ final class StreamingEtlPipeline implements EtlPipeline {
         );
     }
 
-    private void loadBatch(EtlJob job, Collection<EtlRecord> batch) {
-        if (batch.isEmpty()) {
+    private void loadBatch(EtlJob job, EtlBatch batch) {
+        if (batch.getRecords().isEmpty()) {
             return;
         }
 

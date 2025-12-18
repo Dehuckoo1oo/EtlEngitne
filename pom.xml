@@ -101,6 +101,13 @@
 			<scope>test</scope>
 		</dependency>
 
+		<!-- JSqlParser for SQL query parsing and modification -->
+		<dependency>
+			<groupId>com.github.jsqlparser</groupId>
+			<artifactId>jsqlparser</artifactId>
+			<version>4.9</version>
+		</dependency>
+
 		<!-- Thymeleaf -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>

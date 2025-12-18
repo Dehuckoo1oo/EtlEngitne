@@ -82,7 +82,7 @@ public class KafkaToSqlIntegrationTest {
                 "order_id NVARCHAR(64)," +
                 "customer_id NVARCHAR(64)," +
                 "order_date NVARCHAR(32)," +
-                "delivery_date NVARCHAR(32)," +
+                "delivery_date DATE," +
                 "status NVARCHAR(32)," +
                 "total_amount FLOAT," +
                 "currency NVARCHAR(8)," +
@@ -117,7 +117,7 @@ public class KafkaToSqlIntegrationTest {
                 "order_id NVARCHAR(64)," +
                 "customer_id NVARCHAR(64)," +
                 "order_date NVARCHAR(32)," +
-                "delivery_date NVARCHAR(32)," +
+                "delivery_date DATE," +
                 "status NVARCHAR(32)," +
                 "total_amount FLOAT," +
                 "currency NVARCHAR(8)," +
@@ -153,7 +153,7 @@ public class KafkaToSqlIntegrationTest {
                 "order_id NVARCHAR(64)," +
                 "customer_id NVARCHAR(64)," +
                 "order_date NVARCHAR(32)," +
-                "delivery_date NVARCHAR(32)," +
+                "delivery_date DATE," +
                 "status NVARCHAR(32)," +
                 "total_amount FLOAT," +
                 "currency NVARCHAR(8)," +
@@ -188,11 +188,15 @@ public class KafkaToSqlIntegrationTest {
         List<EtlRecord> records = new ArrayList<>(1_000_000);
         Instant now = Instant.now();
         for (int i = 1; i <= 1_000_000; i++) {
+            String deliveryDate = "2025-06-10";
+            if(i % 2 == 0) {
+                deliveryDate = null;
+            }
             EtlRecord record = new EtlRecord(now, "test", i);
             record.put("order_id", "ORD-" + i);
             record.put("customer_id", "CUST");
             record.put("order_date", "2025-06-09");
-            record.put("delivery_date", "2025-06-10");
+            record.put("delivery_date", deliveryDate);
             record.put("status", "PAID");
             record.put("total_amount", 250.0);
             record.put("currency", "USD");
@@ -290,7 +294,8 @@ public class KafkaToSqlIntegrationTest {
 
         // Создаем type-safe конфигурацию для SQL → Kafka
         JdbcExtractorConfig extractorConfig = new JdbcExtractorConfig(
-                "SELECT * FROM SUPPORT.dbo.order_src",
+                Optional.of("SELECT * FROM SUPPORT.dbo.order_src"), // sqlQuery
+                Optional.empty(),        // table
                 Optional.of("bucket"),  // partitionColumn
                 72,                      // partitions
                 Optional.of("order_id"), // keyColumn

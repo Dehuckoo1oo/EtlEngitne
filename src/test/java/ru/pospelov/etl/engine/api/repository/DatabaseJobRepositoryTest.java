@@ -51,10 +51,11 @@ class DatabaseJobRepositoryTest {
 
         // Создаем type-safe конфигурации
         JdbcExtractorConfig extractorConfig = new JdbcExtractorConfig(
-                "SELECT * FROM test_table",
-                Optional.empty(),
+                Optional.of("SELECT * FROM test_table"),
+                Optional.empty(), // table
+                Optional.empty(), // partitionColumn
                 1,
-                Optional.empty(),
+                Optional.empty(), // keyColumn
                 4,
                 1000
         );
@@ -114,10 +115,11 @@ class DatabaseJobRepositoryTest {
     void save_existingJob_shouldUpdateEntity() throws Exception {
         // Given
         JdbcExtractorConfig oldExtractorConfig = new JdbcExtractorConfig(
-                "SELECT * FROM old_table",
-                Optional.empty(),
+                Optional.of("SELECT * FROM old_table"),
+                Optional.empty(), // table
+                Optional.empty(), // partitionColumn
                 1,
-                Optional.empty(),
+                Optional.empty(), // keyColumn
                 4,
                 1000
         );
@@ -192,10 +194,11 @@ class DatabaseJobRepositoryTest {
     void findAll_shouldReturnAllJobs() throws Exception {
         // Given
         JdbcExtractorConfig extractorConfig2 = new JdbcExtractorConfig(
-                "SELECT * FROM table2",
-                Optional.empty(),
+                Optional.of("SELECT * FROM table2"),
+                Optional.empty(), // table
+                Optional.empty(), // partitionColumn
                 1,
-                Optional.empty(),
+                Optional.empty(), // keyColumn
                 4,
                 1000
         );

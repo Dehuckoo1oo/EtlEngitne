@@ -218,6 +218,19 @@ services:
       - broker-i2
       - broker-i3
 
+  schema-registry-ui:
+    image: landoop/schema-registry-ui:latest
+    hostname: schema-registry-ui
+    ports:
+      - 8000:8000
+    networks:
+      - kafka
+    environment:
+      SCHEMAREGISTRY_URL: http://schema-registry:8081
+      PROXY: "true"
+    depends_on:
+      - schema-registry
+
   akhq:
     image: tchiotludo/akhq
     #    restart: unless-stopped
