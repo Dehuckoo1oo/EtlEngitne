@@ -1,14 +1,15 @@
-package ru.pospelov.etl.engine.steps.extractor.jdbc;
+package ru.pospelov.etl.engine.integration;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 import ru.pospelov.etl.engine.config.extractor.JdbcExtractorConfig;
 import ru.pospelov.etl.engine.conversion.TypeConverter;
 import ru.pospelov.etl.engine.model.EtlBatch;
+import ru.pospelov.etl.engine.steps.extractor.jdbc.JdbcExtractor;
+import ru.pospelov.etl.engine.steps.extractor.jdbc.SqlVariantQueryGenerator;
 import ru.pospelov.etl.engine.validation.ValidationException;
 
 import java.util.Optional;
@@ -16,7 +17,7 @@ import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.*;
 
-/**
+/** мен
  * Integration tests for JdbcExtractor custom query validation.
  *
  * <p>Tests sql_variant column validation:
@@ -27,7 +28,6 @@ import static org.assertj.core.api.Assertions.*;
  * </ul>
  */
 @SpringBootTest
-@ActiveProfiles("test")
 class JdbcExtractorValidationIntegrationTest {
 
     @Autowired

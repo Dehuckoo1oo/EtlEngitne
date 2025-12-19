@@ -131,6 +131,16 @@ public class TypeConverter {
             return sqlVariantToJson((SqlVariantValue) javaValue);
         }
 
+        // Обработка Short (TINYINT, SMALLINT) → Integer для Avro INT
+        if (javaValue instanceof Short && physicalType == Schema.Type.INT) {
+            return ((Short) javaValue).intValue();
+        }
+
+        // Обработка Byte (TINYINT unsigned) → Integer для Avro INT
+        if (javaValue instanceof Byte && physicalType == Schema.Type.INT) {
+            return ((Byte) javaValue).intValue();
+        }
+
         // Обработка LocalDate → int (date logical type)
         if (javaValue instanceof LocalDate) {
             if (physicalType != Schema.Type.INT) {
@@ -157,7 +167,7 @@ public class TypeConverter {
             return (int) ((java.sql.Date) javaValue).toLocalDate().toEpochDay();
         }
 
-        // Обработка Instant → long (timestamp-millis logical type)
+        // Обработка Instant → long (timestamp-millis or timestamp-micros logical type)
         if (javaValue instanceof Instant) {
             if (physicalType != Schema.Type.LONG) {
                 throw new TypeConversionException(
@@ -167,10 +177,20 @@ public class TypeConverter {
                         EtlStage.LOAD
                 );
             }
-            return ((Instant) javaValue).toEpochMilli();
+            Instant instant = (Instant) javaValue;
+            org.apache.avro.LogicalType logicalType = schema.getLogicalType();
+
+            // Check if this is timestamp-micros
+            if (logicalType instanceof LogicalTypes.TimestampMicros) {
+                // Convert to microseconds: seconds * 1_000_000 + nanoseconds / 1000
+                return instant.getEpochSecond() * 1_000_000 + instant.getNano() / 1000;
+            } else {
+                // Default to milliseconds for timestamp-millis or unspecified
+                return instant.toEpochMilli();
+            }
         }
 
-        // Обработка java.sql.Timestamp → long (timestamp-millis logical type) - for JDBC sources
+        // Обработка java.sql.Timestamp → long (timestamp-millis or timestamp-micros logical type) - for JDBC sources
         if (javaValue instanceof java.sql.Timestamp) {
             if (physicalType != Schema.Type.LONG) {
                 throw new TypeConversionException(
@@ -180,7 +200,27 @@ public class TypeConverter {
                         EtlStage.LOAD
                 );
             }
-            return ((java.sql.Timestamp) javaValue).toInstant().toEpochMilli();
+            Instant instant = ((java.sql.Timestamp) javaValue).toInstant();
+            org.apache.avro.LogicalType logicalType = schema.getLogicalType();
+
+            if (logicalType instanceof LogicalTypes.TimestampMicros) {
+                return instant.getEpochSecond() * 1_000_000 + instant.getNano() / 1000;
+            } else {
+                return instant.toEpochMilli();
+            }
+        }
+
+        // Обработка microsoft.sql.DateTimeOffset → String - for DATETIMEOFFSET type
+        if (javaValue.getClass().getName().equals("microsoft.sql.DateTimeOffset")) {
+            if (physicalType != Schema.Type.STRING) {
+                throw new TypeConversionException(
+                        String.format("DateTimeOffset field '%s' must be mapped to Avro string type, but got %s",
+                                avroField.name(), physicalType),
+                        jobId,
+                        EtlStage.LOAD
+                );
+            }
+            return javaValue.toString();
         }
 
         // Обработка LocalTime → long (time-micros logical type)
@@ -369,9 +409,10 @@ public class TypeConverter {
         }
 
         // Обработка String - может быть JSON sql_variant
+        // Возвращаем SqlVariantValue вместо распаковки, чтобы EtlBulkRecord мог правильно
+        // определить тип колонки для bulk copy (sql_variant может содержать разные типы в разных строках)
         if (value instanceof String && isSqlVariantJson((String) value)) {
-            SqlVariantValue variant = sqlVariantFromJson((String) value, jobId);
-            return unpackSqlVariant(variant, jobId);
+            return sqlVariantFromJson((String) value, jobId);
         }
 
         // ========== Обработка Avro logical types ==========
@@ -382,11 +423,40 @@ public class TypeConverter {
             return LocalDate.ofEpochDay((Integer) value);
         }
 
-        // Avro timestamp-millis (long) → Instant
+        // Avro timestamp-millis/micros (long) → java.sql.Timestamp or Time
         if (value instanceof Long && targetMetadata != null) {
             String typeName = targetMetadata.getTypeName().toLowerCase();
+            int scale = targetMetadata.getScale();
+
             if (typeName.equals("datetime2") || typeName.equals("datetime") || typeName.equals("smalldatetime")) {
-                return Instant.ofEpochMilli((Long) value);
+                // Use scale to determine precision:
+                // scale > 3: microseconds (timestamp-micros)
+                // scale <= 3: milliseconds (timestamp-millis)
+                if (scale > 3) {
+                    // Microseconds to Instant: epochSeconds = micros / 1_000_000, nanos = (micros % 1_000_000) * 1000
+                    long micros = (Long) value;
+                    long epochSeconds = micros / 1_000_000;
+                    long nanos = (micros % 1_000_000) * 1000;
+                    return Timestamp.from(Instant.ofEpochSecond(epochSeconds, nanos));
+                } else {
+                    // Milliseconds to Instant
+                    return Timestamp.from(Instant.ofEpochMilli((Long) value));
+                }
+            }
+
+            // Avro time-micros (long) → java.sql.Time
+            if (typeName.equals("time")) {
+                // Convert microseconds to nanoseconds
+                long micros = (Long) value;
+                return Time.valueOf(LocalTime.ofNanoOfDay(micros * 1000));
+            }
+        }
+
+        // Integer → Long for BIGINT columns (Avro int can map to SQL BIGINT)
+        if (value instanceof Integer && targetMetadata != null) {
+            String typeName = targetMetadata.getTypeName().toLowerCase();
+            if (typeName.equals("bigint")) {
+                return ((Integer) value).longValue();
             }
         }
 
@@ -506,7 +576,7 @@ public class TypeConverter {
         }
         // Обработка дат и времени
         else if (jdbcValue instanceof Timestamp) {
-            valueStr = ((Timestamp) jdbcValue).toInstant().toString();
+            valueStr = ((Timestamp) jdbcValue).toString();
         } else if (jdbcValue instanceof Date) {
             valueStr = ((Date) jdbcValue).toLocalDate().toString();
         } else if (jdbcValue instanceof Time) {
@@ -527,17 +597,14 @@ public class TypeConverter {
      *
      * <p>Возвращаемые типы (в зависимости от baseType):
      * <ul>
-     * <li>{@link Integer} для {@code int, smallint, tinyint}</li>
+     * <li>{@link Integer} для {@code int, smallint, tinyint, bit}</li>
      * <li>{@link Long} для {@code bigint}</li>
      * <li>{@link BigDecimal} для {@code decimal, numeric, money, smallmoney}</li>
-     * <li>{@link Boolean} для {@code bit}</li>
      * <li>{@link Float} для {@code real}</li>
      * <li>{@link Double} для {@code float}</li>
      * <li>{@link String} для {@code varchar, nvarchar, char, nchar, xml}</li>
      * <li>{@code byte[]} для {@code varbinary, binary, image}</li>
-     * <li>{@link Timestamp} для {@code datetime, datetime2, smalldatetime}</li>
-     * <li>{@link Date} для {@code date}</li>
-     * <li>{@link Time} для {@code time}</li>
+     * <li>{@link Timestamp} для {@code date, time, datetime, datetime2, smalldatetime} (для SQL Server bulk copy совместимости)</li>
      * </ul>
      *
      * @param variant контейнер sql_variant
@@ -552,6 +619,7 @@ public class TypeConverter {
 
         String sqlType = variant.getSqlType().toLowerCase();
         String value = variant.getValue();
+        String trimmed = value.trim();
         String encoding = variant.getEncoding();
 
         try {
@@ -560,27 +628,41 @@ public class TypeConverter {
 
             switch (baseType) {
                 case "int":
+                    return Integer.parseInt(trimmed);
+
                 case "smallint":
+                    return Short.parseShort(trimmed);
+
                 case "tinyint":
-                    return Integer.parseInt(value);
+                    return Integer.parseInt(trimmed);
 
                 case "bigint":
-                    return Long.parseLong(value);
+                    return Long.parseLong(trimmed);
 
                 case "bit":
-                    return Boolean.parseBoolean(value) || "1".equals(value);
+                    if ("1".equals(trimmed) || "true".equalsIgnoreCase(trimmed)) {
+                        return true;
+                    }
+                    if ("0".equals(trimmed) || "false".equalsIgnoreCase(trimmed)) {
+                        return false;
+                    }
+                    throw new TypeConversionException(
+                            String.format("Invalid bit value '%s' for sql_variant type '%s'", value, sqlType),
+                            jobId,
+                            EtlStage.LOAD
+                    );
 
                 case "real":
-                    return Float.parseFloat(value);
+                    return Float.parseFloat(trimmed);
 
                 case "float":
-                    return Double.parseDouble(value);
+                    return Double.parseDouble(trimmed);
 
                 case "decimal":
                 case "numeric":
                 case "money":
                 case "smallmoney":
-                    return new BigDecimal(value);
+                    return new BigDecimal(trimmed);
 
                 case "varchar":
                 case "nvarchar":
@@ -597,9 +679,9 @@ public class TypeConverter {
                 case "rowversion":
                 case "timestamp":
                     if ("base64".equals(encoding)) {
-                        return Base64.getDecoder().decode(value);
+                        return Base64.getDecoder().decode(trimmed);
                     } else if ("hex".equals(encoding)) {
-                        return hexToBytes(value);
+                        return hexToBytes(trimmed);
                     } else {
                         throw new TypeConversionException(
                                 String.format("Unsupported encoding '%s' for binary sql_variant type '%s'",
@@ -610,22 +692,15 @@ public class TypeConverter {
                     }
 
                 case "date":
-                    return Date.valueOf(LocalDate.parse(value));
-
                 case "time":
-                    return Time.valueOf(LocalTime.parse(value));
-
                 case "datetime":
                 case "datetime2":
                 case "smalldatetime":
-                    return Timestamp.from(Instant.parse(value));
-
                 case "datetimeoffset":
-                    // DATETIMEOFFSET требует строкового формата для JDBC
-                    return value;
+                    return trimmed;
 
                 case "uniqueidentifier":
-                    return value; // UUID как строка
+                    return value;
 
                 case "geography":
                 case "geometry":
@@ -851,6 +926,23 @@ public class TypeConverter {
     private String extractBaseType(String sqlType) {
         int parenIndex = sqlType.indexOf('(');
         return parenIndex > 0 ? sqlType.substring(0, parenIndex) : sqlType;
+    }
+
+    private String normalizeSqlTimestamp(String value) {
+        return value.indexOf('T') >= 0 ? value.replace('T', ' ') : value;
+    }
+
+    private String normalizeSqlOffsetTimestamp(String value) {
+        String trimmed = value.trim();
+        if (!trimmed.contains(" ")) {
+            return trimmed;
+        }
+
+        String normalized = trimmed;
+        if (normalized.indexOf('T') < 0) {
+            normalized = normalized.replaceFirst(" ", "T");
+        }
+        return normalized.replace(" ", "");
     }
 
     /**

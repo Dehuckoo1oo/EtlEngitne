@@ -280,8 +280,19 @@ class TypeConverterTest {
         Object result = converter.convertToJdbc(json, metadata, TEST_JOB_ID);
 
         assertNotNull(result);
-        assertTrue(result instanceof BigDecimal);
-        assertEquals(new BigDecimal("1234.56"), result);
+        // Now returns SqlVariantValue instead of unpacked value (for bulk copy compatibility)
+        assertTrue(result instanceof SqlVariantValue);
+
+        // Verify the SqlVariantValue contains correct data
+        SqlVariantValue variant = (SqlVariantValue) result;
+        assertEquals("decimal(18,2)", variant.getSqlType());
+        assertEquals("1234.56", variant.getValue());
+        assertEquals("plain", variant.getEncoding());
+
+        // Verify unpacking works correctly
+        Object unpacked = converter.unpackSqlVariant(variant, TEST_JOB_ID);
+        assertTrue(unpacked instanceof BigDecimal);
+        assertEquals(new BigDecimal("1234.56"), unpacked);
     }
 
     @Test
@@ -342,8 +353,9 @@ class TypeConverterTest {
 
         Object result = converter.convertToJdbc(avroTimestamp, meta, TEST_JOB_ID);
 
-        assertEquals(Instant.class, result.getClass());
-        assertEquals(expected, result);
+        // convertToJdbc returns java.sql.Timestamp for JDBC/BulkCopy compatibility
+        assertEquals(Timestamp.class, result.getClass());
+        assertEquals(expected, ((Timestamp) result).toInstant());
     }
 
     @Test
@@ -475,9 +487,13 @@ class TypeConverterTest {
     void testUnpackSqlVariant_Bit() {
         SqlVariantValue variant1 = new SqlVariantValue("bit", "true", "plain");
         SqlVariantValue variant2 = new SqlVariantValue("bit", "1", "plain");
+        SqlVariantValue variant3 = new SqlVariantValue("bit", "false", "plain");
+        SqlVariantValue variant4 = new SqlVariantValue("bit", "0", "plain");
 
         assertEquals(true, converter.unpackSqlVariant(variant1, TEST_JOB_ID));
         assertEquals(true, converter.unpackSqlVariant(variant2, TEST_JOB_ID));
+        assertEquals(false, converter.unpackSqlVariant(variant3, TEST_JOB_ID));
+        assertEquals(false, converter.unpackSqlVariant(variant4, TEST_JOB_ID));
     }
 
     @Test
@@ -515,19 +531,20 @@ class TypeConverterTest {
         SqlVariantValue variant = new SqlVariantValue("date", "2024-01-15", "plain");
         Object result = converter.unpackSqlVariant(variant, TEST_JOB_ID);
 
-        assertTrue(result instanceof Date);
-        assertEquals(Date.valueOf("2024-01-15"), result);
+        assertTrue(result instanceof String);
+        assertEquals("2024-01-15", result);
     }
 
     @Test
     void testUnpackSqlVariant_Datetime2() {
-        Instant instant = Instant.parse("2024-01-15T10:30:45.123Z");
-        SqlVariantValue variant = new SqlVariantValue("datetime2(7)", instant.toString(), "plain");
+        // Use SQL Server format (yyyy-MM-dd HH:mm:ss.nnnnnnn) instead of ISO-8601
+        Timestamp timestamp = Timestamp.valueOf("2024-01-15 10:30:45.123");
+        SqlVariantValue variant = new SqlVariantValue("datetime2(7)", timestamp.toString(), "plain");
 
         Object result = converter.unpackSqlVariant(variant, TEST_JOB_ID);
 
-        assertTrue(result instanceof Timestamp);
-        assertEquals(Timestamp.from(instant), result);
+        assertTrue(result instanceof String);
+        assertEquals(timestamp.toString(), result);
     }
 
     @Test
@@ -535,8 +552,8 @@ class TypeConverterTest {
         SqlVariantValue variant = new SqlVariantValue("time(7)", "14:30:45", "plain");
         Object result = converter.unpackSqlVariant(variant, TEST_JOB_ID);
 
-        assertTrue(result instanceof Time);
-        assertEquals(Time.valueOf("14:30:45"), result);
+        assertTrue(result instanceof String);
+        assertEquals("14:30:45", result);
     }
 
     @Test
@@ -736,9 +753,94 @@ class TypeConverterTest {
             converter.unpackSqlVariant(new SqlVariantValue("nvarchar(100)", "test", "plain"), TEST_JOB_ID);
             converter.unpackSqlVariant(new SqlVariantValue("date", "2024-01-15", "plain"), TEST_JOB_ID);
             converter.unpackSqlVariant(new SqlVariantValue("time(7)", "14:30:45", "plain"), TEST_JOB_ID);
-            converter.unpackSqlVariant(new SqlVariantValue("datetime2(7)", "2024-01-15T10:30:45.123Z", "plain"), TEST_JOB_ID);
+            // Use SQL Server format (yyyy-MM-dd HH:mm:ss.nnnnnnn) instead of ISO-8601
+            converter.unpackSqlVariant(new SqlVariantValue("datetime2(7)", "2024-01-15 10:30:45.123", "plain"), TEST_JOB_ID);
             converter.unpackSqlVariant(new SqlVariantValue("varbinary(100)", Base64.getEncoder().encodeToString(new byte[]{1, 2, 3}), "base64"), TEST_JOB_ID);
             converter.unpackSqlVariant(new SqlVariantValue("uniqueidentifier", "550e8400-e29b-41d4-a716-446655440000", "plain"), TEST_JOB_ID);
         });
+    }
+
+    // ============ Timestamp-micros support tests ============
+
+    @Test
+    void testConvertToAvro_Instant_TimestampMicros() {
+        Schema timestampSchema = LogicalTypes.timestampMicros().addToSchema(Schema.create(Schema.Type.LONG));
+        Schema.Field field = new Schema.Field("test_timestamp_micros", timestampSchema);
+
+        Instant instant = Instant.parse("2024-01-15T10:30:45.123456Z");
+        Object result = converter.convertToAvro(instant, field, TEST_JOB_ID);
+
+        assertNotNull(result);
+        assertTrue(result instanceof Long);
+
+        // Verify microsecond precision
+        long expectedMicros = instant.getEpochSecond() * 1_000_000 + instant.getNano() / 1000;
+        assertEquals(expectedMicros, result);
+    }
+
+    @Test
+    void testConvertToAvro_Timestamp_TimestampMicros() {
+        Schema timestampSchema = LogicalTypes.timestampMicros().addToSchema(Schema.create(Schema.Type.LONG));
+        Schema.Field field = new Schema.Field("test_timestamp_micros", timestampSchema);
+
+        Timestamp timestamp = Timestamp.valueOf("2024-01-15 10:30:45.123456");
+        Object result = converter.convertToAvro(timestamp, field, TEST_JOB_ID);
+
+        assertNotNull(result);
+        assertTrue(result instanceof Long);
+
+        // Verify microsecond precision
+        Instant instant = timestamp.toInstant();
+        long expectedMicros = instant.getEpochSecond() * 1_000_000 + instant.getNano() / 1000;
+        assertEquals(expectedMicros, result);
+    }
+
+    @Test
+    void testConvertToJdbc_LongMicros_ToDatetime2() {
+        Instant expected = Instant.parse("2024-01-15T10:30:45.123456Z");
+        long micros = expected.getEpochSecond() * 1_000_000 + expected.getNano() / 1000;
+
+        ColumnMetadata metadata = new ColumnMetadata("datetime2_col", Types.TIMESTAMP, "DATETIME2", 0, 6, true);
+        Object result = converter.convertToJdbc(micros, metadata, TEST_JOB_ID);
+
+        assertTrue(result instanceof Timestamp);
+        Timestamp timestamp = (Timestamp) result;
+
+        // Verify microsecond precision (allow 1 microsecond tolerance)
+        long actualMicros = timestamp.toInstant().getEpochSecond() * 1_000_000
+                + timestamp.toInstant().getNano() / 1000;
+        assertEquals(micros, actualMicros);
+    }
+
+    @Test
+    void testConvertToJdbc_LongMillis_ToDatetime2_WithLowScale() {
+        Instant expected = Instant.parse("2024-01-15T10:30:45.123Z");
+        long millis = expected.toEpochMilli();
+
+        // scale=3 indicates milliseconds
+        ColumnMetadata metadata = new ColumnMetadata("datetime2_col", Types.TIMESTAMP, "DATETIME2", 0, 3, true);
+        Object result = converter.convertToJdbc(millis, metadata, TEST_JOB_ID);
+
+        assertTrue(result instanceof Timestamp);
+        Timestamp timestamp = (Timestamp) result;
+
+        // Verify millisecond precision
+        assertEquals(millis, timestamp.toInstant().toEpochMilli());
+    }
+
+    @Test
+    void testConvertToAvro_Instant_TimestampMillis_StillWorks() {
+        // Verify existing timestamp-millis functionality is not broken
+        Schema timestampSchema = LogicalTypes.timestampMillis().addToSchema(Schema.create(Schema.Type.LONG));
+        Schema.Field field = new Schema.Field("test_timestamp_millis", timestampSchema);
+
+        Instant instant = Instant.parse("2024-01-15T10:30:45.123Z");
+        Object result = converter.convertToAvro(instant, field, TEST_JOB_ID);
+
+        assertNotNull(result);
+        assertTrue(result instanceof Long);
+
+        // Should still use milliseconds
+        assertEquals(instant.toEpochMilli(), result);
     }
 }

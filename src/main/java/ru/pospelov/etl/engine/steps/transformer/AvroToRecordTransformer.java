@@ -1,9 +1,13 @@
 package ru.pospelov.etl.engine.steps.transformer;
 
+import org.apache.avro.LogicalType;
+import org.apache.avro.LogicalTypes;
+import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.springframework.stereotype.Component;
 import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
 import ru.pospelov.etl.engine.exception.TransformationException;
+import ru.pospelov.etl.engine.model.ColumnMetadata;
 import ru.pospelov.etl.engine.model.EtlBatch;
 import ru.pospelov.etl.engine.model.EtlRecord;
 
@@ -35,7 +39,7 @@ public class AvroToRecordTransformer {
      */
     public EtlBatch transform(EtlBatch batch) {
         List<EtlRecord> transformedRecords = new ArrayList<>();
-        java.util.Map<String, ru.pospelov.etl.engine.model.ColumnMetadata> avroMetadata = null;
+        java.util.Map<String, ColumnMetadata> avroMetadata = null;
 
         for (EtlRecord record : batch.getRecords()) {
             transformedRecords.add(fromAvro(record));
@@ -55,22 +59,40 @@ public class AvroToRecordTransformer {
 
     /**
      * Build ColumnMetadata from Avro schema for type conversion.
-     * Maps Avro logical types to SQL types.
+     * Maps Avro logical types to SQL types and extracts precision/scale for decimal types.
      */
-    private java.util.Map<String, ru.pospelov.etl.engine.model.ColumnMetadata> buildMetadataFromAvroSchema(org.apache.avro.Schema avroSchema) {
-        java.util.Map<String, ru.pospelov.etl.engine.model.ColumnMetadata> metadata = new java.util.LinkedHashMap<>();
+    private java.util.Map<String, ColumnMetadata> buildMetadataFromAvroSchema(Schema avroSchema) {
+        java.util.Map<String, ColumnMetadata> metadata = new java.util.LinkedHashMap<>();
 
-        for (org.apache.avro.Schema.Field field : avroSchema.getFields()) {
-            org.apache.avro.Schema fieldSchema = unwrapNullable(field.schema());
+        for (Schema.Field field : avroSchema.getFields()) {
+            Schema fieldSchema = unwrapNullable(field.schema());
             String sqlTypeName = avroTypeToSqlTypeName(fieldSchema);
             int jdbcType = sqlTypeNameToJdbcType(sqlTypeName);
 
-            metadata.put(field.name(), new ru.pospelov.etl.engine.model.ColumnMetadata(
+            // Extract precision and scale based on type
+            int precision = 0;
+            int scale = 0;
+            LogicalType logicalType = fieldSchema.getLogicalType();
+            if (logicalType instanceof LogicalTypes.Decimal decimalType) {
+                precision = decimalType.getPrecision();
+                scale = decimalType.getScale();
+            } else if (logicalType instanceof LogicalTypes.TimestampMillis) {
+                scale = 3;  // Milliseconds
+            } else if (logicalType instanceof LogicalTypes.TimestampMicros) {
+                scale = 6;  // Microseconds
+            } else if (logicalType instanceof LogicalTypes.TimeMicros) {
+                scale = 6;  // Microseconds
+            } else {
+                // Set sensible defaults for types that require precision in SQL Server bulk copy
+                precision = getDefaultPrecision(sqlTypeName);
+            }
+
+            metadata.put(field.name(), new ColumnMetadata(
                 field.name(),
                 jdbcType,
                 sqlTypeName,
-                0, // precision - not critical for conversion
-                0, // scale - not critical for conversion
+                precision,  // Now extracted from Avro decimal logical type
+                scale,      // Now extracted from Avro decimal logical type
                 field.schema().isNullable()
             ));
         }
@@ -81,10 +103,10 @@ public class AvroToRecordTransformer {
     /**
      * Unwrap nullable union to get actual type.
      */
-    private org.apache.avro.Schema unwrapNullable(org.apache.avro.Schema schema) {
-        if (schema.getType() == org.apache.avro.Schema.Type.UNION) {
-            for (org.apache.avro.Schema s : schema.getTypes()) {
-                if (s.getType() != org.apache.avro.Schema.Type.NULL) {
+    private Schema unwrapNullable(Schema schema) {
+        if (schema.getType() == Schema.Type.UNION) {
+            for (Schema s : schema.getTypes()) {
+                if (s.getType() != Schema.Type.NULL) {
                     return s;
                 }
             }
@@ -95,18 +117,20 @@ public class AvroToRecordTransformer {
     /**
      * Map Avro type to SQL type name for TypeConverter.
      */
-    private String avroTypeToSqlTypeName(org.apache.avro.Schema schema) {
-        org.apache.avro.LogicalType logicalType = schema.getLogicalType();
+    private String avroTypeToSqlTypeName(Schema schema) {
+        LogicalType logicalType = schema.getLogicalType();
 
         // Handle logical types
         if (logicalType != null) {
-            if (logicalType instanceof org.apache.avro.LogicalTypes.Date) {
+            if (logicalType instanceof LogicalTypes.Date) {
                 return "date";
-            } else if (logicalType instanceof org.apache.avro.LogicalTypes.TimestampMillis) {
+            } else if (logicalType instanceof LogicalTypes.TimestampMillis) {
                 return "datetime2";
-            } else if (logicalType instanceof org.apache.avro.LogicalTypes.TimeMicros) {
+            } else if (logicalType instanceof LogicalTypes.TimestampMicros) {
+                return "datetime2";
+            } else if (logicalType instanceof LogicalTypes.TimeMicros) {
                 return "time";
-            } else if (logicalType instanceof org.apache.avro.LogicalTypes.Decimal) {
+            } else if (logicalType instanceof LogicalTypes.Decimal) {
                 return "decimal";
             }
         }
@@ -121,6 +145,27 @@ public class AvroToRecordTransformer {
             case BOOLEAN -> "bit";
             case BYTES -> "varbinary";
             default -> "nvarchar"; // fallback
+        };
+    }
+
+    /**
+     * Get default precision for SQL types that require it in bulk copy.
+     *
+     * <p>SQL Server bulk copy requires valid precision/length for certain types:
+     * <ul>
+     * <li>varbinary: max length (8000 for varbinary, or use -1 for MAX)</li>
+     * <li>nvarchar: max length (4000 for nvarchar, or use -1 for MAX)</li>
+     * <li>varchar: max length (8000 for varchar, or use -1 for MAX)</li>
+     * </ul>
+     *
+     * <p>Using -1 indicates MAX length, which SQL Server JDBC driver interprets correctly.
+     */
+    private int getDefaultPrecision(String sqlTypeName) {
+        return switch (sqlTypeName.toLowerCase()) {
+            case "varbinary" -> 8000;  // Max for non-MAX varbinary, adequate for most cases
+            case "nvarchar" -> 4000;   // Max for non-MAX nvarchar
+            case "varchar" -> 8000;    // Max for non-MAX varchar
+            default -> 0;              // Other types don't require precision
         };
     }
 
@@ -168,6 +213,10 @@ public class AvroToRecordTransformer {
             if (v instanceof Boolean boolVal) {
                 // SQL Server doesn't accept boolean directly - convert to int
                 record.put(field.name(), boolVal ? 1 : 0);
+            } else if (v instanceof CharSequence) {
+                // Avro returns strings as Utf8 (CharSequence), convert to String
+                // This is important for sql_variant JSON detection in TypeConverter
+                record.put(field.name(), v.toString());
             } else {
                 record.put(field.name(), v);
             }

@@ -393,13 +393,26 @@ public class SqlVariantValue {
   - Avro Extractor читает JSON-строку, десериализует в `SqlVariantValue` через `TypeConverter.sqlVariantFromJson()`
   - SQL Loader определяет тип значения по `instanceof SqlVariantValue`
   - Вызывает `TypeConverter.unpackSqlVariant()` для распаковки в базовый Java-тип
-  - Вставляет базовый тип через JDBC (SQL Server автоматически упакует в sql_variant с правильным базовым типом)
+  - Вставляет базовый тип через JDBC или bulk copy
 
-- **varchar vs nvarchar (принятое ограничение):**
+- **Bulk copy ограничения для sql_variant (принятые решения):**
+
+  **1. varchar vs nvarchar:**
   - `SqlVariantValue.sqlType` содержит точный тип (`varchar(50)` vs `nvarchar(50)`) для информации
   - При распаковке `TypeConverter.unpackSqlVariant()` возвращает базовый Java-тип (`String` для строк, `Integer` для чисел, etc.)
   - **Bulk copy ограничение:** При вставке `String` в sql_variant через bulk copy, SQL Server сам выбирает `nvarchar`
   - **Принятое решение:** `varchar` → `nvarchar`, `char` → `nchar` (функционально эквивалентно, потеря только в памяти)
+
+  **2. Даты/время как строки:**
+  - **Проблема:** SQL Server bulk copy не поддерживает корректную вставку `java.sql.Date`/`java.sql.Timestamp` в sql_variant колонку (ошибка "invalid column length")
+  - **Решение:** `TypeConverter.unpackSqlVariant()` для типов `date/time/datetime/datetime2/smalldatetime/datetimeoffset` возвращает `String` вместо `Date`/`Timestamp`
+  - **Маппинг в EtlBulkRecord:** Эти типы маппятся на `Types.VARCHAR` с рассчитанной длиной:
+    - `date`: 10 символов (yyyy-MM-dd)
+    - `time`: 8 + scale (HH:mm:ss[.fffffff])
+    - `datetime2`: 19 + scale (yyyy-MM-dd HH:mm:ss[.fffffff])
+    - `datetimeoffset`: 26 + scale (yyyy-MM-dd HH:mm:ss[.fffffff] +HH:mm)
+  - **Результат:** В sql_variant значения сохраняются как `varchar`/`nvarchar` вместо `DATE`/`DATETIME2`
+  - **Функциональность:** Значения корректны и могут быть преобразованы обратно в даты через SQL Server функции `CAST`/`CONVERT`
   - Ограничение документируется в JavaDoc `SqlVariantValue` и в документации проекта
 
 ---
@@ -477,8 +490,13 @@ public class TypeConverter {
     /**
      * Распаковывает SqlVariantValue в базовый JDBC-совместимый Java-тип.
      *
+     * <p><b>Важное ограничение для bulk copy:</b> Даты/время (date, time, datetime, datetime2,
+     * smalldatetime, datetimeoffset) распаковываются в String вместо java.sql.Date/Timestamp,
+     * чтобы избежать ошибки "invalid column length" от SQL Server BCP. В результате в sql_variant
+     * базовый тип будет varchar/nvarchar вместо DATE/DATETIME2, но значения функционально корректны.
+     *
      * @param variant контейнер sql_variant
-     * @return базовый Java-тип (Integer, BigDecimal, String, byte[], java.sql.Timestamp, etc.)
+     * @return базовый Java-тип (Integer, BigDecimal, String, byte[], String для дат/времени)
      * @throws TypeConversionException если базовый тип не поддерживается или значение невалидно
      */
     Object unpackSqlVariant(SqlVariantValue variant);
@@ -532,6 +550,10 @@ public class TypeConverter {
 - **sql_variant:**
   - `String` (если распознан JSON sql_variant) → распаковка через `sqlVariantFromJson()` + `unpackSqlVariant()`
   - `SqlVariantValue` → базовый тип через `unpackSqlVariant()`
+    - Числовые: `Integer`, `Long`, `BigDecimal`, `Boolean`, `Float`, `Double`
+    - Строковые: `String`
+    - Бинарные: `byte[]`
+    - **Даты/время: `String`** (для обхода ограничения bulk copy "invalid column length")
 - **Прочие:**
   - `ByteBuffer` → `byte[]`
   - `GenericRecord` → ошибка (должен быть развернут в transformer'е `AvroToRecordTransformer`)
@@ -733,7 +755,99 @@ for (EtlRecord record : batch.getRecords()) {
 - Валидация при старте: если обнаружен sql_variant без `__variant_*` колонок → ошибка с инструкцией
 - Обоснование: custom query может содержать CTE, UNION, GROUP BY, подзапросы - автоматическая модификация рискованна
 
-**3) Ограничение varchar → nvarchar для sql_variant:**
+**3) Ограничения sql_variant при bulk copy:**
+
+**a) varchar → nvarchar:**
 - При вставке через bulk copy: `varchar` → `nvarchar`, `char` → `nchar`
 - Функционально эквивалентно, потеря только в памяти (2 байта вместо 1 на символ)
-- Документируется в JavaDoc и Known Limitations проекта
+
+**b) Даты/время → строки:**
+- **Проблема:** SQL Server bulk copy не поддерживает вставку `java.sql.Date`/`Timestamp` в sql_variant (ошибка "invalid column length")
+- **Решение:** Даты/время распаковываются в строки и вставляются как VARCHAR
+- **Результат:** В sql_variant базовый тип будет `varchar`/`nvarchar` вместо `DATE`/`DATETIME2`
+- **Типы затронутые:** `date`, `time`, `datetime`, `datetime2`, `smalldatetime`, `datetimeoffset`
+- **Функциональность:** Значения корректны и могут быть преобразованы через `CAST`/`CONVERT`
+- **Длины строк:**
+  - `date`: 10 символов (yyyy-MM-dd)
+  - `time`: 8 + scale (HH:mm:ss[.fffffff])
+  - `datetime2`: 19 + scale (yyyy-MM-dd HH:mm:ss[.fffffff])
+  - `datetimeoffset`: 26 + scale (yyyy-MM-dd HH:mm:ss[.fffffff] +HH:mm)
+
+Оба ограничения документируются в JavaDoc и Known Limitations проекта
+
+---
+
+## 9) Cross-database поддержка (реализовано)
+
+### 9.1. Поддержка 3-частных имен таблиц в SqlVariantQueryGenerator
+
+**Статус:** Реализовано
+
+`SqlVariantQueryGenerator` теперь корректно парсит имена таблиц во всех форматах:
+- `"table"` → database=null, schema="dbo", table="table"
+- `"schema.table"` → database=null, schema="schema", table="table"
+- `"database.schema.table"` → database="database", schema="schema", table="table"
+
+**Реализация:**
+- Добавлен inner record `TableIdentifier(database, schema, table, fullName)`
+- Добавлен метод `parseTableName(String tableName)` для парсинга
+- Обновлен `generateSelectQuery` для использования `TableIdentifier`
+- Обновлен `queryInformationSchema` для поддержки cross-database запросов
+
+### 9.2. Cross-database запросы к INFORMATION_SCHEMA
+
+**Статус:** Реализовано
+
+Запрос к `INFORMATION_SCHEMA.COLUMNS` автоматически использует database-qualified имя когда указана БД в имени таблицы:
+
+```java
+String infoSchemaTable;
+if (tableId.database != null) {
+    // Cross-database: SUPPORT.INFORMATION_SCHEMA.COLUMNS
+    infoSchemaTable = tableId.database + ".INFORMATION_SCHEMA.COLUMNS";
+} else {
+    // Same-database: INFORMATION_SCHEMA.COLUMNS
+    infoSchemaTable = "INFORMATION_SCHEMA.COLUMNS";
+}
+```
+
+### 9.3. Требования к permissions
+
+Для работы с таблицами из другой БД необходимы права на SELECT в `INFORMATION_SCHEMA` целевой БД.
+
+---
+
+## 10) Precision/Scale в ColumnMetadata из Avro (реализовано)
+
+### 10.1. Извлечение precision/scale из Avro decimal
+
+**Статус:** Реализовано
+
+`AvroToRecordTransformer.buildMetadataFromAvroSchema()` теперь извлекает `precision` и `scale` из Avro decimal logical type:
+
+```java
+int precision = 0;
+int scale = 0;
+LogicalType logicalType = fieldSchema.getLogicalType();
+if (logicalType instanceof LogicalTypes.Decimal decimalType) {
+    precision = decimalType.getPrecision();
+    scale = decimalType.getScale();
+}
+```
+
+**Обоснование:**
+- SQL Server bulk copy требует валидных значений precision/scale для DECIMAL типов
+- `DECIMAL(0,0)` невалиден и вызывает ошибку: "Length or precision specification 0 is invalid"
+- Avro decimal logical type содержит эти значения в схеме
+
+### 10.2. Влияние на pipeline
+
+| Этап | Компонент | Изменение |
+|------|-----------|-----------|
+| Kafka → SQL | AvroToRecordTransformer | Извлекает precision/scale из Avro schema |
+| SQL insert | FastSqlServerLoader | Использует корректные precision/scale для bulk copy |
+
+### 10.3. Обратная совместимость
+
+- Для не-decimal типов precision/scale остаются 0 (как и прежде)
+- Существующие тесты и pipeline'ы продолжают работать без изменений

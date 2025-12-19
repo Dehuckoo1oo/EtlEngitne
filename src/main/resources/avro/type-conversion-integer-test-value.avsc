@@ -1,0 +1,43 @@
+{
+  "type": "record",
+  "name": "TypeConversionIntegerTest",
+  "namespace": "ru.pospelov.etl.avro",
+  "fields": [
+    {
+      "name": "id",
+      "type": "int"
+    },
+    {
+      "name": "bit_true",
+      "type": "boolean"
+    },
+    {
+      "name": "bit_false",
+      "type": "boolean"
+    },
+    {
+      "name": "tinyint_val",
+      "type": "int"
+    },
+    {
+      "name": "smallint_val",
+      "type": "int"
+    },
+    {
+      "name": "int_val",
+      "type": "int"
+    },
+    {
+      "name": "bigint_val",
+      "type": "long"
+    },
+    {
+      "name": "int_null",
+      "type": [
+        "null",
+        "int"
+      ],
+      "default": null
+    }
+  ]
+}

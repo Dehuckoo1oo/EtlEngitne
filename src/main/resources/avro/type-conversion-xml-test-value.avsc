@@ -1,0 +1,23 @@
+{
+  "type": "record",
+  "name": "TypeConversionXmlTest",
+  "namespace": "ru.pospelov.etl.avro",
+  "fields": [
+    {
+      "name": "id",
+      "type": "int"
+    },
+    {
+      "name": "xml_val",
+      "type": "string"
+    },
+    {
+      "name": "xml_null",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    }
+  ]
+}

@@ -9,13 +9,13 @@ import org.springframework.stereotype.Component;
 import ru.pospelov.etl.engine.config.loader.FastSqlLoaderConfig;
 import ru.pospelov.etl.engine.conversion.TypeConverter;
 import ru.pospelov.etl.engine.exception.EtlErrorSeverity;
-import ru.pospelov.etl.engine.exception.EtlStage;
 import ru.pospelov.etl.engine.exception.LoadingException;
 import ru.pospelov.etl.engine.exception.TypeConversionException;
 import ru.pospelov.etl.engine.model.ColumnMetadata;
 import ru.pospelov.etl.engine.model.EtlBatch;
 import ru.pospelov.etl.engine.model.EtlBulkRecord;
 import ru.pospelov.etl.engine.model.EtlRecord;
+import ru.pospelov.etl.engine.model.SqlVariantValue;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -23,7 +23,8 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -38,13 +39,7 @@ public class FastSqlServerLoader {
     private final TypeConverter typeConverter;
 
     /**
-     * Load data to SQL Server using fast bulk copy with type-safe configuration.
-     *
-     * <p>Performs type conversion using TypeConverter to ensure Avro types
-     * (int for dates, long for timestamps, ByteBuffer for decimals) are converted
-     * to JDBC-compatible types (LocalDate, Instant, BigDecimal) before bulk copy.
-     *
-     * <p>Also handles SqlVariantValue unpacking to base types.
+     * Load data to SQL Server using fast bulk copy with type-safe conversion.
      */
     public void load(FastSqlLoaderConfig config, String jobId, EtlBatch batch) {
         if (batch.getRecords().isEmpty()) return;
@@ -56,9 +51,11 @@ public class FastSqlServerLoader {
         Instant start = Instant.now();
 
         try {
-            // Convert values before bulk copy
             List<EtlRecord> convertedRecords = convertRecords(recordList, batch.getColumnMetadata(), jobId);
-            bulkInsertBatch(targetTable, convertedRecords, jobId);
+            Map<String, List<EtlRecord>> grouped = groupByVariantSignature(convertedRecords);
+            for (List<EtlRecord> groupRecords : grouped.values()) {
+                bulkInsertBatch(targetTable, groupRecords, batch.getColumnMetadata(), jobId);
+            }
             log.debug("Inserted {} rows into '{}'", recordList.size(), targetTable);
         } catch (Exception e) {
             throw new LoadingException(
@@ -71,27 +68,14 @@ public class FastSqlServerLoader {
         }
 
         Instant end = Instant.now();
-        log.info("✅ Fast bulk insert into '{}' completed in {} ms ({} rows)",
+        log.info("Fast bulk insert into '{}' completed in {} ms ({} rows)",
                 targetTable,
                 Duration.between(start, end).toMillis(),
                 recordList.size());
     }
 
     /**
-     * Convert all record values using TypeConverter before bulk copy.
-     *
-     * <p>This ensures that Avro types are converted to JDBC-compatible types:
-     * <ul>
-     * <li>int (Avro date) → LocalDate or java.sql.Date</li>
-     * <li>long (Avro timestamp) → Instant or java.sql.Timestamp</li>
-     * <li>ByteBuffer (Avro decimal) → BigDecimal</li>
-     * <li>String (sql_variant JSON) → unpacked base type</li>
-     * </ul>
-     *
-     * @param records original records from batch
-     * @param columnMetadata metadata from source (may be null)
-     * @param jobId job identifier for error reporting
-     * @return new list of records with converted values
+     * Convert all record values before bulk copy.
      */
     private List<EtlRecord> convertRecords(List<EtlRecord> records, Map<String, ColumnMetadata> columnMetadata, String jobId) {
         List<EtlRecord> converted = new ArrayList<>(records.size());
@@ -103,12 +87,14 @@ public class FastSqlServerLoader {
                     original.getOffset()
             );
 
-            // Filter out __kafka_* and __variant_* fields, and convert remaining fields
             original.getAll().forEach((key, rawValue) -> {
                 if (!key.startsWith("__kafka_") && !key.startsWith("__variant_")) {
                     try {
                         ColumnMetadata meta = columnMetadata != null ? columnMetadata.get(key) : null;
-                        Object jdbcValue = typeConverter.convertToJdbc(rawValue, meta, jobId);
+                        Object jdbcValue = rawValue instanceof SqlVariantValue
+                                ? rawValue
+                                : typeConverter.convertToJdbc(rawValue, meta, jobId);
+
                         convertedRecord.put(key, jdbcValue);
                     } catch (TypeConversionException e) {
                         log.error("Type conversion failed for column '{}' in record {}: actual type={}, value={}",
@@ -133,6 +119,35 @@ public class FastSqlServerLoader {
         return converted;
     }
 
+    private Map<String, List<EtlRecord>> groupByVariantSignature(List<EtlRecord> records) {
+        Map<String, List<EtlRecord>> groups = new LinkedHashMap<>();
+
+        for (EtlRecord record : records) {
+            String signature = buildVariantSignature(record);
+            groups.computeIfAbsent(signature, k -> new ArrayList<>()).add(record);
+        }
+
+        return groups;
+    }
+
+    private String buildVariantSignature(EtlRecord record) {
+        List<String> parts = new ArrayList<>();
+
+        record.getAll().forEach((key, value) -> {
+            if (value instanceof SqlVariantValue) {
+                SqlVariantValue variant = (SqlVariantValue) value;
+                parts.add(key + ":" + variant.getSqlType());
+            }
+        });
+
+        if (parts.isEmpty()) {
+            return "";
+        }
+
+        Collections.sort(parts);
+        return String.join("|", parts);
+    }
+
     /**
      * Truncate value for logging (prevent huge log entries).
      */
@@ -141,25 +156,21 @@ public class FastSqlServerLoader {
         return str.length() > 100 ? str.substring(0, 100) + "..." : str;
     }
 
-    private void bulkInsertBatch(String targetTable, List<EtlRecord> batch, String jobId) {
+    private void bulkInsertBatch(String targetTable, List<EtlRecord> records, Map<String, ColumnMetadata> columnMetadata, String jobId) {
         try (Connection connection = dataSource.getConnection()) {
             SQLServerConnection sqlConn = connection.unwrap(SQLServerConnection.class);
             try (SQLServerBulkCopy bulkCopy = new SQLServerBulkCopy(sqlConn)) {
                 bulkCopy.setDestinationTableName(targetTable);
 
                 SQLServerBulkCopyOptions options = new SQLServerBulkCopyOptions();
-                options.setBatchSize(batch.size());  // Use incoming batch size for optimal network throughput
-                // TableLock=false позволяет параллельную запись из нескольких потоков
-                // SQL Server будет использовать page/row locks вместо table lock
-                // КРИТИЧНО для производительности при многопоточной записи!
+                options.setBatchSize(records.size());
                 options.setTableLock(false);
                 options.setCheckConstraints(false);
                 options.setFireTriggers(false);
                 options.setKeepNulls(true);
                 bulkCopy.setBulkCopyOptions(options);
 
-                // Filter out Kafka envelope fields and variant metadata fields
-                Set<String> userColumns = batch.get(0).getAll().keySet().stream()
+                Set<String> userColumns = records.get(0).getAll().keySet().stream()
                         .filter(k -> !k.startsWith("__kafka_"))
                         .filter(k -> !k.startsWith("__variant_"))
                         .collect(Collectors.toSet());
@@ -168,13 +179,15 @@ public class FastSqlServerLoader {
                     bulkCopy.addColumnMapping(column, column);
                 }
 
-                bulkCopy.writeToServer(new EtlBulkRecord(batch));
+                bulkCopy.writeToServer(new EtlBulkRecord(records, columnMetadata));
             }
         } catch (SQLException e) {
+            log.error("Bulk insert failed with SQL error: {} (SQLState: {}, ErrorCode: {})",
+                    e.getMessage(), e.getSQLState(), e.getErrorCode(), e);
             throw new LoadingException(
-                    "Bulk insert failed",
+                    "Bulk insert failed: " + e.getMessage(),
                     jobId,
-                    batch.isEmpty() ? null : batch.get(0),
+                    records.isEmpty() ? null : records.get(0),
                     EtlErrorSeverity.CRITICAL,
                     e
             );

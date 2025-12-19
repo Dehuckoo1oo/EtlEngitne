@@ -3,12 +3,8 @@
  --проблема, при хранении типов в каждом EtlRecord - мы тратим доп. память на мапу с типами, при этом на каждую строку у нас мапа с типами, т.к. разные типы могут быть в sql_variant
     -- реализовать type-conversion.md
 
-Изменить - пользователь указывает полность DB.schema.tableName:
-public String generateSelectQuery(String tableName, DataSource dataSource) {
-        // 1. Парсить schema.table
-        String schema = "dbo"; // default
-        String table = tableName;
-проверить, где еще в пользовательских данных указана схема dbo или конкретная БД, пользователь должен сам указывать схему и БД в поле с таблицей.
 
 
-в @doc\cross-database-support-plan.md описаны текущие проблемы. в @doc\implementation-guide-cross-database.md описана реализация, которая исправляет эти проблемы. Реализуй исправление и допиши документацию в @doc\type-conversion.md и @doc\type-conversion-requirements.md
+
+Данный проект был создан чтобы быстро переносить любые данные из kafka в ms sql server.
+На основе типов, указанных в [type-conversion.md](doc/type-conversion.md) проверь может ли проект выполнять свои функции, переносить любые данные из kafka с avro схемой и без - string в ms sql server? если нет - создай документ в doc, где обозначь все проблемные типы.

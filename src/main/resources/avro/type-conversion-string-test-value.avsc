@@ -1,0 +1,51 @@
+{
+  "type": "record",
+  "name": "TypeConversionStringTest",
+  "namespace": "ru.pospelov.etl.avro",
+  "fields": [
+    {
+      "name": "id",
+      "type": "int"
+    },
+    {
+      "name": "char_val",
+      "type": "string"
+    },
+    {
+      "name": "varchar_val",
+      "type": "string"
+    },
+    {
+      "name": "varchar_max",
+      "type": "string"
+    },
+    {
+      "name": "nchar_val",
+      "type": "string"
+    },
+    {
+      "name": "nvarchar_val",
+      "type": "string"
+    },
+    {
+      "name": "nvarchar_max",
+      "type": "string"
+    },
+    {
+      "name": "text_val",
+      "type": "string"
+    },
+    {
+      "name": "ntext_val",
+      "type": "string"
+    },
+    {
+      "name": "varchar_null",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    }
+  ]
+}

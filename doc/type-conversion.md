@@ -189,6 +189,7 @@
 - В Java: `SqlVariantValue` (содержит sqlType, value, encoding)
 - В Avro: `string` (JSON-конверт вида `{"v":1,"t":"decimal(18,2)","val":"12.30","enc":"plain"}`)
 - При вставке в SQL: распаковывается в базовый JDBC-совместимый тип
+  - **Важное ограничение для bulk copy:** даты/время (date, time, datetime, datetime2, smalldatetime, datetimeoffset) распаковываются в строку и вставляются как VARCHAR, чтобы избежать ошибки "invalid column length" от SQL Server BCP. В результате в sql_variant базовый тип будет строковый (varchar/nvarchar) вместо DATE/TIME/DATETIME2.
 
 **Обнаружение sql_variant колонок:**
 
@@ -216,7 +217,12 @@ JDBC Extractor обнаруживает sql_variant колонки по нали
 
 Требования к конвертации:
 - Kafka loader (format=AVRO): если в `data` лежит `SqlVariantValue`, сериализовать его в JSON-строку и положить в Avro `string`.
-- SQL loader (JDBC/bulk): перед bind/insert `SqlVariantValue` преобразовать в "реальный" JDBC-совместимый Java-тип базового значения (`Integer`, `Long`, `BigDecimal`, `Boolean`, `byte[]`, `java.sql.Date`, `Timestamp`, ...), так чтобы SQL Server сохранил правильный базовый тип внутри `sql_variant`.
+- SQL loader (JDBC/bulk): перед bind/insert `SqlVariantValue` преобразовать в "реальный" JDBC-совместимый Java-тип базового значения:
+  - Числовые типы: `Integer`, `Long`, `BigDecimal`, `Boolean`, `Float`, `Double`
+  - Строковые типы: `String` для varchar/nvarchar/char/nchar/text/xml
+  - Бинарные типы: `byte[]` для varbinary/binary/image
+  - **Даты/время**: `String` для date/time/datetime/datetime2/smalldatetime/datetimeoffset
+    - **Обоснование**: SQL Server bulk copy не поддерживает корректную вставку java.sql.Date/Timestamp в sql_variant колонку (ошибка "invalid column length"). Для обхода этого ограничения даты/время распаковываются в строковое представление и вставляются как VARCHAR. В sql_variant они сохраняются как varchar/nvarchar вместо DATE/DATETIME2, но функционально значения корректны и могут быть преобразованы обратно в даты через SQL Server функции CAST/CONVERT.
 
 ### 2.3. Bulk copy: типизация и фильтрация полей
 
@@ -244,6 +250,17 @@ JDBC Extractor обнаруживает sql_variant колонки по нали
 - `Boolean` → `Types.BOOLEAN`
 - `byte[]` → `Types.VARBINARY`
 - `String` → `Types.VARCHAR` (по умолчанию)
+
+**Специальная обработка sql_variant**:
+
+Для колонок типа `sql_variant`, `EtlBulkRecord.mapSqlVariantToSqlType()` маппит базовые типы следующим образом:
+- Числовые: `int/bigint/decimal/etc.` → соответствующие JDBC типы
+- Строковые: `varchar/nvarchar/char/etc.` → `Types.VARCHAR`/`Types.NVARCHAR`
+- Бинарные: `varbinary/binary` → `Types.VARBINARY`
+- **Даты/время**: `date/time/datetime/datetime2/etc.` → `Types.VARCHAR`
+  - Значения передаются как строки с рассчитанной длиной через `temporalStringLength()`
+  - Длины: date=10, time=8+scale, datetime2=19+scale, datetimeoffset=26+scale
+  - В sql_variant сохраняются как varchar/nvarchar вместо DATE/DATETIME2
 
 ### 2.4. Конвертация Avro logical types
 
@@ -359,3 +376,102 @@ AvroToRecordTransformer создает ColumnMetadata из Avro schema, мапп
 
 Рекомендуемый формат одной строкой:
 `Type mismatch at SQL->Avro: field=... expected=... actual=... sqlType=... job=... partition=... offset=...`
+
+---
+
+## 4) Cross-database поддержка
+
+### 4.1. Поддержка 3-частных имен таблиц
+
+`SqlVariantQueryGenerator` поддерживает несколько форматов имен таблиц:
+
+| Формат | Пример | Разбор |
+|--------|--------|--------|
+| `table` | `orders` | database=null, schema="dbo", table="orders" |
+| `schema.table` | `sales.orders` | database=null, schema="sales", table="orders" |
+| `database.schema.table` | `SUPPORT.dbo.orders` | database="SUPPORT", schema="dbo", table="orders" |
+
+### 4.2. Cross-database запросы к INFORMATION_SCHEMA
+
+При работе с таблицами из другой базы данных на том же SQL Server, запрос к `INFORMATION_SCHEMA.COLUMNS` автоматически использует database-qualified имя:
+
+**Для таблицы в текущей БД:**
+```sql
+SELECT COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'orders'
+```
+
+**Для таблицы в другой БД (например, SUPPORT):**
+```sql
+SELECT COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION
+FROM SUPPORT.INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'orders'
+```
+
+### 4.3. Требования к permissions для cross-database
+
+Для работы с таблицами из другой базы данных необходимы соответствующие права:
+
+```sql
+-- Вариант 1: SELECT на INFORMATION_SCHEMA
+USE SUPPORT;
+GRANT SELECT ON INFORMATION_SCHEMA.COLUMNS TO [etl_user];
+
+-- Вариант 2: роль db_datareader (включает доступ к INFORMATION_SCHEMA)
+USE SUPPORT;
+ALTER ROLE db_datareader ADD MEMBER [etl_user];
+```
+
+---
+
+## 5) Precision/Scale в ColumnMetadata из Avro
+
+### 5.1. Проблема
+
+При конвертации данных из Kafka (Avro) в SQL Server, `ColumnMetadata` создается из Avro schema. Для DECIMAL полей критично наличие корректных `precision` и `scale`:
+- SQL Server bulk copy требует валидных значений precision/scale
+- `DECIMAL(0,0)` невалиден и вызывает ошибку: "Length or precision specification 0 is invalid"
+
+### 5.2. Решение
+
+`AvroToRecordTransformer.buildMetadataFromAvroSchema()` извлекает `precision` и `scale` из Avro decimal logical type:
+
+```java
+LogicalType logicalType = fieldSchema.getLogicalType();
+if (logicalType instanceof LogicalTypes.Decimal decimalType) {
+    precision = decimalType.getPrecision();
+    scale = decimalType.getScale();
+}
+```
+
+### 5.3. Маппинг Avro logical types на SQL types
+
+| Avro логический тип | SQL тип | precision/scale |
+|---------------------|---------|-----------------|
+| `decimal(p,s)` | DECIMAL | из Avro schema |
+| `date` | DATE | n/a |
+| `timestamp-millis` | DATETIME2 | n/a |
+| `time-micros` | TIME | n/a |
+
+### 5.4. Пример Avro schema с decimal
+
+```json
+{
+  "type": "record",
+  "name": "Order",
+  "fields": [
+    {
+      "name": "amount",
+      "type": {
+        "type": "bytes",
+        "logicalType": "decimal",
+        "precision": 18,
+        "scale": 2
+      }
+    }
+  ]
+}
+```
+
+При обработке такой схемы создается `ColumnMetadata` с `precision=18`, `scale=2`, что позволяет SQL Server bulk copy корректно вставить данные в колонку `DECIMAL(18,2)`.

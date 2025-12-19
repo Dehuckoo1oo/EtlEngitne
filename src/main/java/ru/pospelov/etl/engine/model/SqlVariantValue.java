@@ -93,23 +93,39 @@ import lombok.ToString;
  * </pre>
  *
  * <h2>Ограничения при bulk copy</h2>
- * При вставке через bulk copy в SQL Server, строковые базовые типы автоматически
- * конвертируются:
+ * При вставке через bulk copy в SQL Server применяются следующие ограничения:
+ *
+ * <h3>1. Строковые типы</h3>
+ * Строковые базовые типы автоматически конвертируются:
  * <ul>
  * <li>{@code varchar} → {@code nvarchar}</li>
  * <li>{@code char} → {@code nchar}</li>
  * </ul>
  *
- * Это ограничение bulk copy API, точное восстановление требует PreparedStatement
- * с CAST (не используется из-за производительности).
- *
- * <p>Функционально {@code nvarchar} полностью включает {@code varchar}
+ * Это ограничение bulk copy API. Функционально {@code nvarchar} полностью включает {@code varchar}
  * (Unicode superset of ANSI). Потеря только в памяти (2 байта вместо 1 на символ)
  * внутри sql_variant.
  *
- * <p>Числовые типы ({@code int}, {@code bigint}, {@code decimal(p,s)}),
- * даты/время ({@code date}, {@code datetime2(p)}), и бинарные ({@code varbinary(n)})
- * восстанавливаются корректно.
+ * <h3>2. Даты/время</h3>
+ * SQL Server bulk copy не поддерживает вставку {@code java.sql.Date}/{@code java.sql.Timestamp}
+ * в sql_variant колонку (ошибка "invalid column length"). Для обхода этого ограничения
+ * даты/время распаковываются в строковое представление и вставляются как {@code VARCHAR}.
+ * <ul>
+ * <li>{@code date} → {@code varchar(10)} (yyyy-MM-dd)</li>
+ * <li>{@code time(p)} → {@code varchar(8+scale)} (HH:mm:ss[.fffffff])</li>
+ * <li>{@code datetime2(p)} → {@code varchar(19+scale)} (yyyy-MM-dd HH:mm:ss[.fffffff])</li>
+ * <li>{@code datetimeoffset(p)} → {@code varchar(26+scale)} (yyyy-MM-dd HH:mm:ss[.fffffff] +HH:mm)</li>
+ * <li>{@code datetime} → {@code varchar(23)} (yyyy-MM-dd HH:mm:ss.fff)</li>
+ * <li>{@code smalldatetime} → {@code varchar(21)}</li>
+ * </ul>
+ *
+ * В результате в sql_variant базовый тип будет {@code varchar}/{@code nvarchar} вместо
+ * {@code DATE}/{@code DATETIME2}. Значения функционально корректны и могут быть преобразованы
+ * обратно в даты через SQL Server функции {@code CAST}/{@code CONVERT}.
+ *
+ * <h3>Корректно восстанавливаемые типы</h3>
+ * Числовые типы ({@code int}, {@code bigint}, {@code decimal(p,s)}) и бинарные
+ * ({@code varbinary(n)}) восстанавливаются корректно без потери типа.
  *
  * @see ru.pospelov.etl.engine.conversion.TypeConverter#createSqlVariant
  * @see ru.pospelov.etl.engine.conversion.TypeConverter#sqlVariantToJson

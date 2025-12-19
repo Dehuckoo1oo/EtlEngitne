@@ -1,0 +1,23 @@
+{
+  "type": "record",
+  "name": "TypeConversionVariantAllTest",
+  "namespace": "ru.pospelov.etl.avro",
+  "fields": [
+    {
+      "name": "id",
+      "type": "int"
+    },
+    {
+      "name": "variant_col",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "description",
+      "type": "string"
+    }
+  ]
+}

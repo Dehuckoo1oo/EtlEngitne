@@ -1,0 +1,27 @@
+{
+  "type": "record",
+  "name": "TypeConversionFloatTest",
+  "namespace": "ru.pospelov.etl.avro",
+  "fields": [
+    {
+      "name": "id",
+      "type": "int"
+    },
+    {
+      "name": "real_val",
+      "type": "float"
+    },
+    {
+      "name": "float_val",
+      "type": "double"
+    },
+    {
+      "name": "real_null",
+      "type": [
+        "null",
+        "float"
+      ],
+      "default": null
+    }
+  ]
+}

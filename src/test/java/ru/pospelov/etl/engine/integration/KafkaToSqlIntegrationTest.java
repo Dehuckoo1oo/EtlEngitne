@@ -1,4 +1,4 @@
-package ru.pospelov.etl.engine;
+package ru.pospelov.etl.engine.integration;
 
 import com.microsoft.sqlserver.jdbc.SQLServerBulkCopy;
 import com.microsoft.sqlserver.jdbc.SQLServerBulkCopyOptions;

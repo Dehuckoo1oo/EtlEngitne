@@ -1,0 +1,42 @@
+{
+  "type": "record",
+  "name": "TypeConversionMoneyTest",
+  "namespace": "ru.pospelov.etl.avro",
+  "fields": [
+    {
+      "name": "id",
+      "type": "int"
+    },
+    {
+      "name": "money_val",
+      "type": {
+        "type": "bytes",
+        "logicalType": "decimal",
+        "precision": 19,
+        "scale": 4
+      }
+    },
+    {
+      "name": "smallmoney_val",
+      "type": {
+        "type": "bytes",
+        "logicalType": "decimal",
+        "precision": 10,
+        "scale": 4
+      }
+    },
+    {
+      "name": "money_null",
+      "type": [
+        "null",
+        {
+          "type": "bytes",
+          "logicalType": "decimal",
+          "precision": 19,
+          "scale": 4
+        }
+      ],
+      "default": null
+    }
+  ]
+}
