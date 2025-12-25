@@ -43,7 +43,6 @@ public class KafkaToSqlIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
-
     /**
      * Оптимизированная версия теста sqlTableToKafka_shouldTransferMillionRows.
      * <p>

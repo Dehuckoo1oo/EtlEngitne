@@ -1,0 +1,1 @@
+curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json" -d @data-lake/kafka-connect/connectors/s3-sink-order-events.json

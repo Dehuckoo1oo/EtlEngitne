@@ -8,3 +8,397 @@
 
 Данный проект был создан чтобы быстро переносить любые данные из kafka в ms sql server.
 На основе типов, указанных в [type-conversion.md](doc/type-conversion.md) проверь может ли проект выполнять свои функции, переносить любые данные из kafka с avro схемой и без - string в ms sql server? если нет - создай документ в doc, где обозначь все проблемные типы.
+
+
+
+
+
+
+
+План реализации Data Lake архитектуры
+
+ Цель
+
+ Добавить Data Lake компоненты (MinIO, Kafka Connect, Trino, Jupyter) к существующей Kafka инфраструктуре для выгрузки данных из топика order-events в Parquet формат для аналитики.
+
+ Текущее состояние
+
+ - ✅ Kafka KRaft cluster (3 контроллера + 3 брокера)
+ - ✅ Schema Registry + UI (порт 8081, 8000)
+ - ✅ AKHQ Kafka Management UI (порт 8089)
+ - ✅ MS SQL Server (порт 1433)
+ - ✅ Топик order-events с Avro схемой (31 поле: order_id, customer_id, total_amount, и др.)
+
+ Что будет добавлено
+
+ Новые сервисы в compose.yaml
+
+ 1. MinIO - S3-совместимое хранилище (порты 9000, 9001)
+ 2. MinIO-init - инициализация бакета datalake
+ 3. Kafka Connect - Distributed Worker с S3 Sink Connector (порт 8083)
+ 4. Trino - SQL движок для аналитики (порт 8084)
+ 5. Jupyter - Notebook для проверки Parquet (порт 8888)
+
+ Новая структура каталогов
+
+ data-lake/
+ ├── kafka-connect/
+ │   ├── Dockerfile
+ │   └── connectors/
+ │       └── s3-sink-order-events.json
+ ├── trino/
+ │   ├── config.properties
+ │   ├── jvm.config
+ │   ├── node.properties
+ │   ├── log.properties
+ │   └── catalog/
+ │       ├── minio.properties
+ │       └── iceberg.properties
+ ├── jupyter/
+ │   ├── Dockerfile
+ │   ├── requirements.txt
+ │   └── notebooks/
+ │       └── validate-parquet.ipynb
+ └── README.md
+
+ Этапы реализации
+
+ Этап 1: Создание структуры каталогов
+
+ - Создать папку data-lake в корне проекта
+ - Создать подпапки: kafka-connect/connectors, trino/catalog, jupyter/notebooks
+
+ Этап 2: Конфигурационные файлы Kafka Connect
+
+ Создать файлы:
+
+ 1. data-lake/kafka-connect/Dockerfile
+   - Базовый образ: confluentinc/cp-kafka-connect:7.5.0
+   - Установить Confluent S3 Sink Connector (версия 10.5.0)
+ 2. data-lake/kafka-connect/connectors/s3-sink-order-events.json
+   - Topic: order-events
+   - S3 bucket: datalake
+   - Формат: Parquet с компрессией Snappy
+   - Tasks: 12 (по числу CPU)
+   - Flush size: 50,000 записей (~128-256 MB файлы)
+   - Rotation: 5 минут (300,000 ms)
+   - Partitioner: TimeBasedPartitioner (hourly)
+   - Path format: 'calc_id='yyyyMMdd-HHmmss'/dt='yyyy-MM-dd'/hour='HH
+
+ Ключевые параметры коннектора:
+ {
+   "connector.class": "io.confluent.connect.s3.S3SinkConnector",
+   "tasks.max": "12",
+   "topics": "order-events",
+   "s3.bucket.name": "datalake",
+   "store.url": "http://minio:9000",
+   "format.class": "io.confluent.connect.s3.format.parquet.ParquetFormat",
+   "parquet.codec": "snappy",
+   "flush.size": "50000",
+   "rotate.interval.ms": "300000"
+ }
+
+ Этап 3: Конфигурационные файлы Trino
+
+ Создать файлы:
+
+ 1. data-lake/trino/config.properties
+   - Coordinator + Worker mode
+   - HTTP порт: 8080
+   - Memory limits: 4GB query max, 2GB per node
+ 2. data-lake/trino/jvm.config
+   - Heap: 8GB
+   - G1GC
+ 3. data-lake/trino/node.properties
+   - Environment: development
+   - Node ID: trino-local-1
+ 4. data-lake/trino/log.properties
+   - Log level: INFO
+ 5. data-lake/trino/catalog/minio.properties
+   - Connector: hive
+   - S3 endpoint: http://minio:9000
+   - Credentials: minioadmin/minioadmin
+   - Path-style access: enabled
+ 6. data-lake/trino/catalog/iceberg.properties
+   - Connector: iceberg (для будущего использования)
+   - File format: Parquet
+
+ Этап 4: Конфигурационные файлы Jupyter
+
+ Создать файлы:
+
+ 1. data-lake/jupyter/Dockerfile
+   - Базовый образ: jupyter/scipy-notebook:latest
+   - Установить Python пакеты из requirements.txt
+ 2. data-lake/jupyter/requirements.txt
+   - pyarrow>=14.0.0
+   - pandas>=2.0.0
+   - s3fs>=2023.12.0
+   - boto3>=1.34.0
+   - matplotlib, seaborn
+ 3. data-lake/jupyter/notebooks/validate-parquet.ipynb
+   - Подключение к MinIO
+   - Чтение Parquet файлов
+   - Проверка схемы и данных
+
+ Этап 5: Обновление Docker Compose
+
+ Файл: D:\dev\EtlEngine\compose.yaml
+
+ Добавить после сервиса akhq (строка 283):
+
+ 1. Сервис minio:
+   - Image: minio/minio:latest
+   - Ports: 9000 (API), 9001 (Console)
+   - Credentials: minioadmin/minioadmin
+   - Volume: minio-data
+   - Command: server /data --console-address ":9001"
+   - Network: kafka
+ 2. Сервис minio-init:
+   - Image: minio/mc:latest
+   - Создаёт бакет datalake
+   - Зависит от minio
+   - Выходит после выполнения (exit 0)
+ 3. Сервис kafka-connect:
+   - Build: ./data-lake/kafka-connect
+   - Port: 8083
+   - Bootstrap servers: broker-i1:19092,broker-i2:19092,broker-i3:19092
+   - Schema Registry: http://schema-registry:8081
+   - Group ID: kafka-connect-cluster
+   - Key/Value converters: AvroConverter
+   - Heap: 4GB
+   - Volume: kafka-connect-data
+   - Depends on: brokers, schema-registry, minio
+ 4. Сервис trino:
+   - Image: trinodb/trino:latest
+   - Port: 8084 (внешний) → 8080 (внутренний)
+   - Volumes: монтирование конфиг-файлов из ./data-lake/trino
+   - Depends on: minio
+ 5. Сервис jupyter:
+   - Build: ./data-lake/jupyter
+   - Port: 8888
+   - Token: datalake
+   - Environment: AWS credentials для MinIO
+   - Volumes: монтирование notebooks
+   - Depends on: minio
+
+ Добавить volumes в конец файла:
+ volumes:
+   minio-data:
+     name: minio-data
+   kafka-connect-data:
+     name: kafka-connect-data
+   jupyter-data:
+     name: jupyter-data
+
+ Этап 6: Документация
+
+ Создать файл: data-lake/README.md
+
+ Содержание:
+ - Обзор архитектуры
+ - Доступ к UI сервисов (порты, credentials)
+ - Команды для деплоя S3 Sink коннектора
+ - Команды для проверки статуса
+ - Примеры SQL запросов в Trino
+ - Troubleshooting
+
+ Этап 7: Последовательность запуска
+
+ 1. Поднять MinIO и инициализировать бакет:
+ docker-compose up -d minio minio-init
+ docker-compose logs -f minio-init
+ 2. Поднять Kafka Connect:
+ docker-compose up -d kafka-connect
+ docker-compose logs -f kafka-connect
+ 3. Поднять Trino и Jupyter:
+ docker-compose up -d trino jupyter
+ 4. Деплой S3 Sink коннектора:
+ curl -X POST http://localhost:8083/connectors \
+   -H "Content-Type: application/json" \
+   -d @data-lake/kafka-connect/connectors/s3-sink-order-events.json
+ 5. Проверка статуса:
+ curl http://localhost:8083/connectors/s3-sink-order-events/status
+
+ Этап 8: End-to-End валидация
+
+ 1. Публикация данных в Kafka:
+   - Запустить существующий KafkaToSqlIntegrationTest (1M записей в order-events)
+   - Или использовать AKHQ UI для ручной публикации тестовых данных
+ 2. Проверка Parquet файлов в MinIO:
+   - Открыть MinIO Console: http://localhost:9001 (minioadmin/minioadmin)
+   - Проверить наличие файлов в бакете datalake/topics/order-events/
+   - Убедиться, что размеры файлов ~128-256 MB
+ 3. SQL запросы в Trino:
+ docker exec -it <trino-container> trino
+
+ 3. Создать таблицу:
+ CREATE SCHEMA IF NOT EXISTS minio.datalake;
+
+ CREATE TABLE minio.datalake.order_events (
+   order_id VARCHAR,
+   customer_id VARCHAR,
+   order_date VARCHAR,
+   delivery_date DATE,
+   status VARCHAR,
+   total_amount DOUBLE,
+   currency VARCHAR,
+   -- ... остальные 24 поля
+ )
+ WITH (
+   external_location = 's3a://datalake/topics/order-events/',
+   format = 'PARQUET'
+ );
+
+ 3. Запросить данные:
+ SELECT COUNT(*) FROM minio.datalake.order_events;
+ SELECT * FROM minio.datalake.order_events LIMIT 10;
+ 4. Проверка в Jupyter:
+   - Открыть http://localhost:8888 (token: datalake)
+   - Запустить validate-parquet.ipynb
+   - Проверить схему и содержимое Parquet файлов
+
+ Модель данных в S3
+
+ s3://datalake/
+   topics/
+     order-events/
+       calc_id=20251220-100000/
+         dt=2025-12-20/hour=10/
+           part-0001.parquet
+           part-0002.parquet
+         dt=2025-12-20/hour=11/
+           part-0001.parquet
+
+ Особенности:
+ - Иммутабельные данные
+ - Partitioning по времени (hourly)
+ - Размер файлов: ~128-256 MB (оптимально для аналитики)
+ - Формат: Parquet с Snappy компрессией
+
+ Критические файлы для создания/модификации
+
+ Файлы для создания (всего ~15 файлов):
+
+ 1. data-lake/kafka-connect/Dockerfile - Kafka Connect образ с плагинами
+ 2. data-lake/kafka-connect/connectors/s3-sink-order-events.json - Конфигурация S3 Sink коннектора
+ 3. data-lake/trino/config.properties - Настройки Trino
+ 4. data-lake/trino/jvm.config - JVM параметры Trino
+ 5. data-lake/trino/node.properties - Node ID Trino
+ 6. data-lake/trino/log.properties - Логирование Trino
+ 7. data-lake/trino/catalog/minio.properties - Hive каталог для MinIO
+ 8. data-lake/trino/catalog/iceberg.properties - Iceberg каталог (будущее)
+ 9. data-lake/jupyter/Dockerfile - Jupyter образ
+ 10. data-lake/jupyter/requirements.txt - Python зависимости
+ 11. data-lake/jupyter/notebooks/validate-parquet.ipynb - Notebook для валидации
+ 12. data-lake/README.md - Документация
+
+ Файл для модификации:
+
+ 1. compose.yaml - Добавление 5 новых сервисов (minio, minio-init, kafka-connect, trino, jupyter) и 3 volumes
+
+ Особенности конфигурации
+
+ Kafka Connect S3 Sink
+
+ - Flush strategy: 50,000 записей ИЛИ 5 минут (что наступит раньше)
+ - Расчёт размера файла: 31 поле × ~200 байт × 50,000 записей ÷ Snappy ≈ 150-200 MB
+ - Error handling: Fail-fast (errors.tolerance: none) для начала
+ - Offset commit: Только после успешной записи в S3
+ - Consumer overrides: max.poll.records=5000, auto.offset.reset=earliest
+
+ Trino Memory Configuration
+
+ - Query max memory: 4GB
+ - Query max memory per node: 2GB
+ - JVM heap: 8GB
+
+ MinIO
+
+ - Access Key: minioadmin
+ - Secret Key: minioadmin
+ - Bucket: datalake
+ - Region: us-east-1
+ - Path-style access: enabled
+
+ UI и доступ
+
+ После запуска будут доступны:
+
+ | Сервис            | URL                   | Credentials           |
+ |-------------------|-----------------------|-----------------------|
+ | MinIO Console     | http://localhost:9001 | minioadmin/minioadmin |
+ | Kafka Connect API | http://localhost:8083 | -                     |
+ | Trino UI          | http://localhost:8084 | -                     |
+ | Jupyter           | http://localhost:8888 | token: datalake       |
+ | AKHQ (Kafka)      | http://localhost:8089 | test/test             |
+ | Schema Registry   | http://localhost:8081 | -                     |
+
+ Мониторинг
+
+ 1. Kafka Connect status:
+ curl http://localhost:8083/connectors/s3-sink-order-events/status | jq
+ 2. Kafka lag (AKHQ):
+   - Consumer group: kafka-connect-cluster
+   - Отслеживать lag по партициям
+ 3. MinIO metrics:
+   - Web Console → Metrics
+   - Storage usage, upload throughput
+ 4. Trino queries:
+   - Web UI → Query history
+   - Query latency, rows processed
+
+ Troubleshooting
+
+ Проблема: Коннектор не стартует
+
+ Решение:
+ - Проверить логи: docker-compose logs kafka-connect
+ - Убедиться, что MinIO доступен: docker exec kafka-connect curl http://minio:9000/minio/health/live
+ - Проверить синтаксис JSON конфигурации
+
+ Проблема: Нет Parquet файлов в MinIO
+
+ Решение:
+ - Проверить, есть ли данные в топике order-events (AKHQ)
+ - Проверить статус задач: curl http://localhost:8083/connectors/s3-sink-order-events/tasks
+ - Подождать 5 минут (rotate.interval.ms)
+
+ Проблема: Файлы слишком маленькие (<10 MB)
+
+ Решение:
+ - Увеличить flush.size до 100,000-200,000
+ - Увеличить rotate.interval.ms до 600,000 (10 минут)
+
+ Проблема: Trino не может прочитать файлы
+
+ Решение:
+ - Проверить credentials в minio.properties
+ - Проверить путь в CREATE TABLE statement
+ - Протестировать доступ: docker exec -it <trino-container> curl http://minio:9000/
+
+ Будущие улучшения (Post-MVP)
+
+ 1. Phase 2: Добавить второй Kafka Connect worker для HA
+ 2. Phase 3: Внедрить dedicated Hive Metastore
+ 3. Phase 4: Миграция на Apache Iceberg для ACID
+ 4. Phase 5: Добавить Apache Spark для batch processing
+ 5. Phase 6: Настроить мониторинг (Prometheus + Grafana)
+
+ Критерии готовности
+
+ ✅ Система готова, если:
+ - Docker Compose поднимается без ошибок
+ - Kafka Connect видит топики и схемы
+ - Parquet корректно записывается в MinIO
+ - Файлы размером ~128-256 MB
+ - Trino выполняет SQL запросы по данным
+ - Jupyter читает и отображает Parquet файлы
+
+ Заметки по реализации
+
+ - НЕ изменяем существующие сервисы (Kafka, Schema Registry, SQL Server)
+ - ТОЛЬКО добавляем новые компоненты
+ - Используем ту же сеть kafka
+ - Конфигурации изолированы в папке data-lake/
+ - Поддержка локальной разработки (production конфиги - позже)
