@@ -177,6 +177,52 @@ deploy:
 
 ---
 
+## Инициализация базы данных для Hive Metastore
+
+После запуска PostgreSQL необходимо убедиться, что база данных и пользователь созданы правильно.
+
+### Автоматическая инициализация
+
+База данных `metastore_db` и пользователь `hive` создаются автоматически при первом запуске контейнера через переменные окружения из `.env` файла.
+
+### Проверка инициализации
+
+```bash
+# Проверить что база данных создана
+PGPASSWORD='<SECURE_PASSWORD>' psql -h postgres-metastore.company.com -U hive -d metastore_db -c "\l"
+
+# Проверить что пользователь имеет права
+PGPASSWORD='<SECURE_PASSWORD>' psql -h postgres-metastore.company.com -U hive -d metastore_db -c "SELECT current_user, current_database();"
+```
+
+### Ручная инициализация (если требуется)
+
+Если база данных не была создана автоматически:
+
+```bash
+# Подключиться как postgres пользователь
+docker exec -it postgres-metastore psql -U postgres
+
+# Создать базу данных и пользователя
+CREATE DATABASE metastore_db;
+CREATE USER hive WITH PASSWORD '<SECURE_PASSWORD>';
+GRANT ALL PRIVILEGES ON DATABASE metastore_db TO hive;
+
+# Выйти
+\q
+
+# Проверить подключение
+PGPASSWORD='<SECURE_PASSWORD>' psql -h postgres-metastore.company.com -U hive -d metastore_db -c "SELECT 1;"
+```
+
+### Схема базы данных
+
+Схема Hive Metastore будет создана автоматически при первом запуске Hive Metastore сервиса. PostgreSQL должен быть запущен и доступен ДО запуска Hive Metastore.
+
+**Важно**: Не создавайте схему вручную - Hive Metastore сделает это автоматически при первом подключении.
+
+---
+
 ## Health Check
 
 ```bash

@@ -103,12 +103,28 @@ systemctl start docker
 
 ### Этап 2: Развертывание сервисов (в порядке зависимостей)
 
+**ВАЖНО**: Сервисы должны разворачиваться строго в указанном порядке!
+
 1. **MinIO** (независимый) → [Инструкция](minio.md)
+   - Создать bucket `datalake`
+   - Создать пользователей: `hive-metastore`, `kafka-connect`, `trino`
+
 2. **PostgreSQL** (независимый) → [Инструкция](postgres-metastore.md)
+   - База данных `metastore_db` создается автоматически
+   - Пользователь `hive` создается автоматически
+
 3. **Hive Metastore** (зависит от: PostgreSQL, MinIO) → [Инструкция](hive-metastore.md)
+   - ⚠️ Убедитесь что PostgreSQL и MinIO запущены и доступны
+   - Схема БД создается автоматически при первом запуске
+
 4. **Kafka Connect** (зависит от: Kafka, Schema Registry, MinIO) → [Инструкция](kafka-connect.md)
+   - ⚠️ Убедитесь что Kafka и Schema Registry доступны
+
 5. **Trino** (зависит от: Hive Metastore, MinIO) → [Инструкция](trino.md)
+   - ⚠️ Убедитесь что Hive Metastore доступен
+
 6. **Jupyter** (зависит от: Trino, MinIO) → [Инструкция](jupyter.md)
+   - ⚠️ Убедитесь что Trino доступен
 
 Запуск каждого сервиса выполняется через GitLab CI/CD или вручную (варианты есть в сервисных инструкциях).
 
@@ -278,7 +294,37 @@ docker build -t <service-name>:latest .
 docker run -d --name <service-name> --env-file .env <service-name>:latest
 ```
 
-### 3. Проверить работоспособность
+### 3. Инициализация сервисов
+
+После развертывания каждого сервиса необходимо выполнить инициализацию:
+
+#### MinIO
+```bash
+# Создать bucket и пользователей
+mc alias set datalake https://minio.company.com:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}
+mc mb datalake/datalake
+mc admin user add datalake hive-metastore <PASSWORD>
+mc admin user add datalake kafka-connect <PASSWORD>
+mc admin user add datalake trino <PASSWORD>
+# См. подробности в minio.md
+```
+
+#### PostgreSQL
+```bash
+# Проверить что база данных создана
+PGPASSWORD='<PASSWORD>' psql -h postgres-metastore.company.com -U hive -d metastore_db -c "SELECT 1;"
+# База данных и пользователь создаются автоматически
+```
+
+#### Hive Metastore
+```bash
+# Проверить зависимости перед запуском
+pg_isready -h postgres-metastore.company.com -U hive
+curl -f https://minio.company.com:9000/minio/health/live
+# Схема БД создается автоматически при первом запуске Hive Metastore
+```
+
+### 4. Проверить работоспособность
 ```bash
 # Выполнить health checks из списка ниже
 ```

@@ -181,7 +181,43 @@ mc mb datalake/datalake
 mc ilm add datalake/datalake --expiry-days 365 --prefix "archive/"
 ```
 
-### 2. Создать service account для Kafka Connect
+### 2. Создать service account для Hive Metastore
+
+```bash
+# Создать пользователя
+mc admin user add datalake hive-metastore <SECURE_PASSWORD>
+
+# Создать policy с правами на чтение и запись
+cat > hive-metastore-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::datalake/*",
+        "arn:aws:s3:::datalake"
+      ]
+    }
+  ]
+}
+EOF
+
+mc admin policy create datalake hive-metastore-policy hive-metastore-policy.json
+mc admin policy attach datalake hive-metastore-policy --user hive-metastore
+
+# Сохранить credentials для Hive Metastore
+echo "AWS_ACCESS_KEY_ID=hive-metastore" >> /tmp/hive-metastore-minio-creds
+echo "AWS_SECRET_ACCESS_KEY=<PASSWORD>" >> /tmp/hive-metastore-minio-creds
+```
+
+### 3. Создать service account для Kafka Connect
 
 ```bash
 # Создать пользователя
@@ -216,7 +252,7 @@ echo "AWS_ACCESS_KEY_ID=kafka-connect" >> /tmp/kafka-connect-minio-creds
 echo "AWS_SECRET_ACCESS_KEY=<PASSWORD>" >> /tmp/kafka-connect-minio-creds
 ```
 
-### 3. Создать service account для Trino
+### 4. Создать service account для Trino
 
 ```bash
 mc admin user add datalake trino <SECURE_PASSWORD>
@@ -245,6 +281,73 @@ mc admin policy attach datalake trino-policy --user trino
 
 echo "AWS_ACCESS_KEY_ID=trino" >> /tmp/trino-minio-creds
 echo "AWS_SECRET_ACCESS_KEY=<PASSWORD>" >> /tmp/trino-minio-creds
+```
+
+---
+
+## Автоматическая инициализация (опционально)
+
+Для автоматического создания bucket при старте можно использовать init-контейнер. Это особенно полезно при развертывании через CI/CD.
+
+### Создать init скрипт
+
+`minio/init-minio.sh`:
+
+```bash
+#!/bin/sh
+# Автоматическая инициализация MinIO при первом запуске
+
+until /usr/bin/mc alias set myminio https://minio.company.com:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}; do
+  echo 'Waiting for MinIO to be ready...'
+  sleep 2
+done
+
+echo "MinIO is ready. Creating bucket and users..."
+
+# Создать bucket
+/usr/bin/mc mb myminio/datalake --ignore-existing
+/usr/bin/mc policy set download myminio/datalake
+
+echo "Bucket 'datalake' created successfully"
+
+# Создать пользователей
+/usr/bin/mc admin user add myminio hive-metastore ${HIVE_METASTORE_PASSWORD}
+/usr/bin/mc admin user add myminio kafka-connect ${KAFKA_CONNECT_PASSWORD}
+/usr/bin/mc admin user add myminio trino ${TRINO_PASSWORD}
+
+# Создать policies
+cat > /tmp/hive-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::datalake/*", "arn:aws:s3:::datalake"]
+    }
+  ]
+}
+EOF
+
+/usr/bin/mc admin policy create myminio hive-metastore-policy /tmp/hive-policy.json
+/usr/bin/mc admin policy attach myminio hive-metastore-policy --user hive-metastore
+
+echo "MinIO initialization completed successfully"
+exit 0
+```
+
+### Запустить init контейнер
+
+```bash
+docker run --rm \
+  --network host \
+  -e MINIO_ROOT_USER=${MINIO_ROOT_USER} \
+  -e MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD} \
+  -e HIVE_METASTORE_PASSWORD=<SECURE_PASSWORD> \
+  -e KAFKA_CONNECT_PASSWORD=<SECURE_PASSWORD> \
+  -e TRINO_PASSWORD=<SECURE_PASSWORD> \
+  -v $(pwd)/init-minio.sh:/init-minio.sh \
+  minio/mc:latest /bin/sh /init-minio.sh
 ```
 
 ---

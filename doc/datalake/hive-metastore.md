@@ -121,6 +121,42 @@ SERVICE_OPTS=-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djav
 
 ---
 
+## Зависимости
+
+**ВАЖНО**: Hive Metastore зависит от следующих сервисов и должен быть запущен ПОСЛЕ их успешного развертывания:
+
+1. **PostgreSQL Metastore** - база данных для хранения метаданных
+   - Должен быть доступен по адресу `postgres-metastore.company.com:5432`
+   - База данных `metastore_db` должна быть создана
+   - Пользователь `hive` должен иметь права на запись
+   - Health check: `pg_isready -h postgres-metastore.company.com -U hive`
+
+2. **MinIO** - объектное хранилище для Data Lake
+   - Должен быть доступен по адресу `minio.company.com:9000`
+   - Bucket `datalake` должен быть создан
+   - Пользователь `hive-metastore` должен быть создан с правами на чтение/запись
+   - Health check: `curl -f https://minio.company.com:9000/minio/health/live`
+
+### Проверка готовности зависимостей
+
+Перед запуском Hive Metastore выполните:
+
+```bash
+# Проверить PostgreSQL
+pg_isready -h postgres-metastore.company.com -U hive
+# Ожидаемый результат: postgres-metastore.company.com:5432 - accepting connections
+
+# Проверить MinIO
+curl -f https://minio.company.com:9000/minio/health/live
+# Ожидаемый результат: HTTP 200 OK
+
+# Проверить доступность базы данных
+PGPASSWORD='<SECURE_PASSWORD>' psql -h postgres-metastore.company.com -U hive -d metastore_db -c "SELECT 1;"
+# Ожидаемый результат: 1 строка
+```
+
+---
+
 ## Build & Deploy
 
 ### Вариант 1: Вручную
