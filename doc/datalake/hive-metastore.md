@@ -212,11 +212,6 @@ Deploy Hive Metastore to TEST:
     - MINIO_HOST="minio.company.com"
   script:
     - |
-      # Сборка Docker образа
-      echo "Собираем Docker образ..."
-      docker build -t hive-metastore:${CI_COMMIT_SHORT_SHA} .
-      docker tag hive-metastore:${CI_COMMIT_SHORT_SHA} hive-metastore:latest
-
       # Создаем переменную с названием образа
       ImageName=hive-metastore:latest
 
@@ -226,6 +221,9 @@ Deploy Hive Metastore to TEST:
       # Создаем скрипт деплоя
       echo "set -e" > build.sh
       cat >> build.sh << DEPLOY_SCRIPT
+
+      echo 'Собираем Docker образ...'
+      docker build -t ${ImageName} .
 
       echo '==========================================================================================='
       echo 'Проверка зависимостей перед деплоем...'
@@ -275,20 +273,9 @@ Deploy Hive Metastore to TEST:
 
       DEPLOY_SCRIPT
 
-      echo "Копируем конфигурационные файлы на ${SRV_APP}..."
+      echo "Копируем папку на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
       rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
-
-      # Экспортируем и копируем Docker образ на целевой сервер
-      echo "Экспортируем Docker образ..."
-      docker save hive-metastore:latest | gzip > hive-metastore-latest.tar.gz
-
-      echo "Копируем образ на ${SRV_APP}..."
-      rsync -avz ./hive-metastore-latest.tar.gz svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/
-
-      echo "Загружаем образ на ${SRV_APP}..."
-      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
-        docker load < hive-metastore-latest.tar.gz"
 
       echo "Запускаем скрипт деплоя на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
@@ -312,7 +299,7 @@ Deploy Hive Metastore to TEST:
 - Замените `your_runner_tag` на тег вашего GitLab Runner
 - Замените `svc_user` на пользователя для SSH подключения
 - Скрипт автоматически проверяет доступность PostgreSQL и MinIO перед деплоем
-- Docker образ копируется на целевой сервер для изоляции от registry
+- Docker образ собирается локально на целевом сервере из скопированного проекта
 
 ---
 

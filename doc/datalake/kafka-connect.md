@@ -234,11 +234,6 @@ Deploy Kafka Connect to TEST:
     - KAFKA_BOOTSTRAP="kafka-broker1:9092,kafka-broker2:9092,kafka-broker3:9092"
   script:
     - |
-      # Сборка Docker образа
-      echo "Собираем Docker образ..."
-      docker build -t kafka-connect-datalake:${CI_COMMIT_SHORT_SHA} .
-      docker tag kafka-connect-datalake:${CI_COMMIT_SHORT_SHA} kafka-connect-datalake:latest
-
       # Создаем переменную с названием образа
       ImageName=kafka-connect-datalake:latest
 
@@ -248,6 +243,9 @@ Deploy Kafka Connect to TEST:
       # Создаем скрипт деплоя
       echo "set -e" > build.sh
       cat >> build.sh << DEPLOY_SCRIPT
+
+      echo 'Собираем Docker образ...'
+      docker build -t ${ImageName} .
 
       echo 'Останавливаем и удаляем старый контейнер...'
       docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
@@ -289,20 +287,9 @@ Deploy Kafka Connect to TEST:
 
       DEPLOY_SCRIPT
 
-      echo "Копируем конфигурационные файлы на ${SRV_APP}..."
+      echo "Копируем папку на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
       rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
-
-      # Экспортируем и копируем Docker образ на целевой сервер
-      echo "Экспортируем Docker образ..."
-      docker save kafka-connect-datalake:latest | gzip > kafka-connect-latest.tar.gz
-
-      echo "Копируем образ на ${SRV_APP}..."
-      rsync -avz ./kafka-connect-latest.tar.gz svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/
-
-      echo "Загружаем образ на ${SRV_APP}..."
-      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
-        docker load < kafka-connect-latest.tar.gz"
 
       echo "Запускаем скрипт деплоя на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
@@ -325,7 +312,7 @@ Deploy Kafka Connect to TEST:
 - Замените `your_runner_tag` на тег вашего GitLab Runner
 - Замените `svc_user` на пользователя для SSH подключения
 - Укажите корректные адреса Kafka брокеров в `KAFKA_BOOTSTRAP`
-- Docker образ копируется на целевой сервер для изоляции от registry
+- Docker образ собирается локально на целевом сервере из скопированного проекта
 
 ---
 

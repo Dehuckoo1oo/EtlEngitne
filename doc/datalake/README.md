@@ -208,6 +208,10 @@ Deploy Service to TEST:
       echo "set -e" > build.sh
       cat >> build.sh << DEPLOY_SCRIPT
 
+      # Для сервисов с кастомным Dockerfile добавьте сборку образа:
+      echo 'Собираем Docker образ...'
+      docker build -t ${ImageName} .
+
       echo 'Останавливаем и удаляем старый контейнер...'
       docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
 
@@ -231,6 +235,12 @@ Deploy Service to TEST:
       echo "Удаляем временные файлы с ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
 ```
+
+**Примечание**:
+- Для сервисов с кастомным Dockerfile (Hive Metastore, Kafka Connect, Trino, Jupyter): добавьте `docker build` в `build.sh` для локальной сборки образа
+- Для сервисов с готовыми образами (MinIO, PostgreSQL): используйте образ из registry напрямую, без `docker build`
+- Все конфигурационные файлы и Dockerfile копируются через `rsync` на целевую машину
+- Docker образ собирается или запускается непосредственно на целевом сервере из скопированного проекта
 
 ---
 
