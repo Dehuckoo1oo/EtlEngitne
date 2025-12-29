@@ -189,38 +189,146 @@ nc -zv hive-metastore.company.com 9083
 
 ### Вариант 2: GitLab CI/CD
 
+**ВАЖНО**: Перед деплоем Hive Metastore убедитесь, что PostgreSQL и MinIO уже запущены и доступны.
+
 `.gitlab-ci.yml`:
 
 ```yaml
+variables:
+  GIT_STRATEGY: clone
+
 stages:
   - build
   - deploy
 
-variables:
-  IMAGE_TAG: ${CI_COMMIT_REF_NAME}-${CI_COMMIT_SHORT_SHA}
-  REGISTRY: registry.company.com
-  TARGET_HOST: hive-metastore.company.com
-
-build:
+Build Hive Metastore Image:
   stage: build
+  tags: [your_runner_tag]
   script:
-    - docker build -t ${REGISTRY}/hive-metastore:${IMAGE_TAG} .
-    - docker tag ${REGISTRY}/hive-metastore:${IMAGE_TAG} ${REGISTRY}/hive-metastore:latest
-    - docker push ${REGISTRY}/hive-metastore:${IMAGE_TAG}
-    - docker push ${REGISTRY}/hive-metastore:latest
+    - docker build -t hive-metastore:${CI_COMMIT_SHORT_SHA} .
+    - docker tag hive-metastore:${CI_COMMIT_SHORT_SHA} hive-metastore:latest
+    # Опционально: push в registry
+    # - docker tag hive-metastore:latest registry.company.com/hive-metastore:latest
+    # - docker push registry.company.com/hive-metastore:latest
   only:
     - main
 
-deploy:
+Deploy Hive Metastore to TEST:
   stage: deploy
-  script:
-    - ssh deploy@${TARGET_HOST} "docker pull ${REGISTRY}/hive-metastore:latest"
-    - ssh deploy@${TARGET_HOST} "docker stop hive-metastore || true && docker rm hive-metastore || true"
-    - ssh deploy@${TARGET_HOST} "docker run -d --name hive-metastore --restart unless-stopped -p 9083:9083 --env-file /opt/hive-metastore/.env ${REGISTRY}/hive-metastore:latest"
-  only:
-    - main
+  tags: [your_runner_tag]
+  needs: [Build Hive Metastore Image]
   when: manual
+  allow_failure: false
+  before_script:
+    - SRV_APP="hive-metastore.company.com"
+    - POSTGRES_HOST="postgres-metastore.company.com"
+    - MINIO_HOST="minio.company.com"
+  script:
+    - |
+      # Создаем переменную с названием образа
+      ImageName=hive-metastore:latest
+
+      # Создаем переменную с названием контейнера
+      ContainerName=hive-metastore
+
+      # Создаем скрипт деплоя
+      echo "set -e" > build.sh
+      cat >> build.sh << 'DEPLOY_SCRIPT'
+
+      echo '==========================================================================================='
+      echo 'Проверка зависимостей перед деплоем...'
+      echo '==========================================================================================='
+
+      # Проверить PostgreSQL
+      echo 'Проверяем доступность PostgreSQL...'
+      docker run --rm postgres:15-alpine pg_isready -h ${POSTGRES_HOST} -U hive || \
+        (echo 'ОШИБКА: PostgreSQL недоступен!' && exit 1)
+
+      # Проверить MinIO
+      echo 'Проверяем доступность MinIO...'
+      curl -f https://${MINIO_HOST}:9000/minio/health/live || \
+        (echo 'ОШИБКА: MinIO недоступен!' && exit 1)
+
+      echo 'Все зависимости доступны. Продолжаем деплой...'
+      echo '==========================================================================================='
+
+      echo 'Останавливаем и удаляем старый контейнер...'
+      docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
+
+      echo 'Создаем новый контейнер...'
+      docker run \
+        -d \
+        --name ${ContainerName} \
+        --restart=always \
+        -e AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
+        -e AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
+        -e SERVICE_OPTS="${SERVICE_OPTS}" \
+        -p 9083:9083 \
+        -h ${SRV_APP} \
+        ${ImageName}
+
+      echo "=========================================================================================="
+      echo 'ГОТОВО!'
+      echo "=========================================================================================="
+      echo 'Проверяем состояние контейнера:'
+      sleep 15
+      docker ps -a --filter name=${ContainerName}
+      echo '------------------------------------------------------------------------------------------'
+      echo 'Логи контейнера:'
+      docker logs ${ContainerName}
+      echo '------------------------------------------------------------------------------------------'
+      echo 'Проверяем доступность Thrift порта:'
+      nc -zv localhost 9083 || echo 'ВНИМАНИЕ: Порт 9083 еще не доступен. Дождитесь полной инициализации.'
+      echo '------------------------------------------------------------------------------------------'
+
+      DEPLOY_SCRIPT
+
+      echo "Копируем конфигурационные файлы и образ на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
+      rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
+
+      # Копируем Docker образ на целевой сервер
+      echo "Экспортируем Docker образ..."
+      docker save hive-metastore:latest | gzip > hive-metastore-latest.tar.gz
+
+      echo "Копируем образ на ${SRV_APP}..."
+      rsync -avz ./hive-metastore-latest.tar.gz svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/
+
+      echo "Загружаем образ на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
+        docker load < hive-metastore-latest.tar.gz"
+
+      echo "Запускаем скрипт деплоя на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
+        export ContainerName=${ContainerName} && \
+        export ImageName=${ImageName} && \
+        export SRV_APP=${SRV_APP} && \
+        export POSTGRES_HOST=${POSTGRES_HOST} && \
+        export MINIO_HOST=${MINIO_HOST} && \
+        export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID}' && \
+        export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY}' && \
+        export SERVICE_OPTS='${SERVICE_OPTS}' && \
+        chmod u+x ./build.sh && ./build.sh"
+
+      echo "Удаляем временные файлы с ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
 ```
+
+**Настройка переменных окружения в GitLab**:
+
+В настройках CI/CD вашего проекта GitLab (`Settings > CI/CD > Variables`) добавьте:
+
+| Переменная | Значение | Тип |
+|-----------|----------|-----|
+| `AWS_ACCESS_KEY_ID` | `hive-metastore` | Variable |
+| `AWS_SECRET_ACCESS_KEY` | `<password_from_minio>` | Variable (Masked) |
+| `SERVICE_OPTS` | `-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres-metastore.company.com:5432/metastore_db -Djavax.jdo.option.ConnectionUserName=hive -Djavax.jdo.option.ConnectionPassword=<SECURE_PASSWORD> -Xms4g -Xmx4g` | Variable (Masked) |
+
+**Примечание**:
+- Замените `your_runner_tag` на тег вашего GitLab Runner
+- Замените `svc_user` на пользователя для SSH подключения
+- Скрипт автоматически проверяет доступность PostgreSQL и MinIO перед деплоем
+- Docker образ копируется на целевой сервер для изоляции от registry
 
 ---
 

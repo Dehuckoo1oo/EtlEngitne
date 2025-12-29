@@ -246,38 +246,138 @@ curl -f http://trino.company.com:8080/v1/info
 
 ### Вариант 2: GitLab CI/CD
 
+**ВАЖНО**: Перед деплоем Trino убедитесь, что Hive Metastore уже запущен и доступен.
+
 `.gitlab-ci.yml`:
 
 ```yaml
+variables:
+  GIT_STRATEGY: clone
+
 stages:
   - build
   - deploy
 
-variables:
-  IMAGE_TAG: ${CI_COMMIT_REF_NAME}-${CI_COMMIT_SHORT_SHA}
-  REGISTRY: registry.company.com
-  TARGET_HOST: trino.company.com
-
-build:
+Build Trino Image:
   stage: build
+  tags: [your_runner_tag]
   script:
-    - docker build -t ${REGISTRY}/trino-datalake:${IMAGE_TAG} .
-    - docker tag ${REGISTRY}/trino-datalake:${IMAGE_TAG} ${REGISTRY}/trino-datalake:latest
-    - docker push ${REGISTRY}/trino-datalake:${IMAGE_TAG}
-    - docker push ${REGISTRY}/trino-datalake:latest
+    - docker build -t trino-datalake:${CI_COMMIT_SHORT_SHA} .
+    - docker tag trino-datalake:${CI_COMMIT_SHORT_SHA} trino-datalake:latest
   only:
     - main
 
-deploy:
+Deploy Trino to TEST:
   stage: deploy
-  script:
-    - ssh deploy@${TARGET_HOST} "docker pull ${REGISTRY}/trino-datalake:latest"
-    - ssh deploy@${TARGET_HOST} "docker stop trino || true && docker rm trino || true"
-    - ssh deploy@${TARGET_HOST} "docker run -d --name trino --restart unless-stopped -p 8080:8080 --env-file /opt/trino/.env -v /mnt/data/trino:/data/trino ${REGISTRY}/trino-datalake:latest"
-  only:
-    - main
+  tags: [your_runner_tag]
+  needs: [Build Trino Image]
   when: manual
+  allow_failure: false
+  before_script:
+    - SRV_APP="trino.company.com"
+    - HIVE_METASTORE="hive-metastore.company.com"
+  script:
+    - |
+      # Создаем переменную с названием образа
+      ImageName=trino-datalake:latest
+
+      # Создаем переменную с названием контейнера
+      ContainerName=trino
+
+      # Создаем скрипт деплоя
+      echo "set -e" > build.sh
+      cat >> build.sh << 'DEPLOY_SCRIPT'
+
+      echo '==========================================================================================='
+      echo 'Проверка зависимостей перед деплоем...'
+      echo '==========================================================================================='
+
+      # Проверить Hive Metastore
+      echo 'Проверяем доступность Hive Metastore...'
+      nc -zv ${HIVE_METASTORE} 9083 || \
+        (echo 'ОШИБКА: Hive Metastore недоступен!' && exit 1)
+
+      echo 'Все зависимости доступны. Продолжаем деплой...'
+      echo '==========================================================================================='
+
+      echo 'Останавливаем и удаляем старый контейнер...'
+      docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
+
+      echo 'Создаем директории для данных...'
+      mkdir -p /mnt/data/trino
+
+      echo 'Создаем новый контейнер...'
+      docker run \
+        -d \
+        --name ${ContainerName} \
+        --restart=always \
+        -e AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
+        -e AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
+        -p 8080:8080 \
+        -v /mnt/data/trino:/data/trino \
+        -h ${SRV_APP} \
+        ${ImageName}
+
+      echo "=========================================================================================="
+      echo 'ГОТОВО!'
+      echo "=========================================================================================="
+      echo 'Проверяем состояние контейнера:'
+      sleep 15
+      docker ps -a --filter name=${ContainerName}
+      echo '------------------------------------------------------------------------------------------'
+      echo 'Логи контейнера:'
+      docker logs ${ContainerName}
+      echo '------------------------------------------------------------------------------------------'
+      echo 'Проверяем доступность HTTP API:'
+      sleep 5
+      curl -f http://localhost:8080/v1/info || echo 'ВНИМАНИЕ: HTTP API еще не доступен. Дождитесь полной инициализации.'
+      echo '------------------------------------------------------------------------------------------'
+
+      DEPLOY_SCRIPT
+
+      echo "Копируем конфигурационные файлы и образ на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
+      rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
+
+      # Копируем Docker образ на целевой сервер
+      echo "Экспортируем Docker образ..."
+      docker save trino-datalake:latest | gzip > trino-latest.tar.gz
+
+      echo "Копируем образ на ${SRV_APP}..."
+      rsync -avz ./trino-latest.tar.gz svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/
+
+      echo "Загружаем образ на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
+        docker load < trino-latest.tar.gz"
+
+      echo "Запускаем скрипт деплоя на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
+        export ContainerName=${ContainerName} && \
+        export ImageName=${ImageName} && \
+        export SRV_APP=${SRV_APP} && \
+        export HIVE_METASTORE=${HIVE_METASTORE} && \
+        export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID}' && \
+        export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY}' && \
+        chmod u+x ./build.sh && ./build.sh"
+
+      echo "Удаляем временные файлы с ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
 ```
+
+**Настройка переменных окружения в GitLab**:
+
+В настройках CI/CD вашего проекта GitLab (`Settings > CI/CD > Variables`) добавьте:
+
+| Переменная | Значение | Тип |
+|-----------|----------|-----|
+| `AWS_ACCESS_KEY_ID` | `trino` | Variable |
+| `AWS_SECRET_ACCESS_KEY` | `<password_from_minio>` | Variable (Masked) |
+
+**Примечание**:
+- Замените `your_runner_tag` на тег вашего GitLab Runner
+- Замените `svc_user` на пользователя для SSH подключения
+- Скрипт автоматически проверяет доступность Hive Metastore перед деплоем
+- Docker образ копируется на целевой сервер для изоляции от registry
 
 ---
 

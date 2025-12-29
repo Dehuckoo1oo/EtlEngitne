@@ -162,35 +162,128 @@ curl -f http://jupyter.company.com:8888/api
 `.gitlab-ci.yml`:
 
 ```yaml
+variables:
+  GIT_STRATEGY: clone
+
 stages:
   - build
   - deploy
 
-variables:
-  IMAGE_TAG: ${CI_COMMIT_REF_NAME}-${CI_COMMIT_SHORT_SHA}
-  REGISTRY: registry.company.com
-  TARGET_HOST: jupyter.company.com
-
-build:
+Build Jupyter Image:
   stage: build
+  tags: [your_runner_tag]
   script:
-    - docker build -t ${REGISTRY}/jupyter-datalake:${IMAGE_TAG} .
-    - docker tag ${REGISTRY}/jupyter-datalake:${IMAGE_TAG} ${REGISTRY}/jupyter-datalake:latest
-    - docker push ${REGISTRY}/jupyter-datalake:${IMAGE_TAG}
-    - docker push ${REGISTRY}/jupyter-datalake:latest
+    - docker build -t jupyter-datalake:${CI_COMMIT_SHORT_SHA} .
+    - docker tag jupyter-datalake:${CI_COMMIT_SHORT_SHA} jupyter-datalake:latest
   only:
     - main
 
-deploy:
+Deploy Jupyter to TEST:
   stage: deploy
-  script:
-    - ssh deploy@${TARGET_HOST} "docker pull ${REGISTRY}/jupyter-datalake:latest"
-    - ssh deploy@${TARGET_HOST} "docker stop jupyter || true && docker rm jupyter || true"
-    - ssh deploy@${TARGET_HOST} "docker run -d --name jupyter --restart unless-stopped -p 8888:8888 --env-file /opt/jupyter/.env -v /mnt/data/jupyter/notebooks:/home/jovyan/work ${REGISTRY}/jupyter-datalake:latest"
-  only:
-    - main
+  tags: [your_runner_tag]
+  needs: [Build Jupyter Image]
   when: manual
+  allow_failure: false
+  before_script:
+    - SRV_APP="jupyter.company.com"
+  script:
+    - |
+      # Создаем переменную с названием образа
+      ImageName=jupyter-datalake:latest
+
+      # Создаем переменную с названием контейнера
+      ContainerName=jupyter
+
+      # Создаем скрипт деплоя
+      echo "set -e" > build.sh
+      cat >> build.sh << 'DEPLOY_SCRIPT'
+
+      echo 'Останавливаем и удаляем старый контейнер...'
+      docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
+
+      echo 'Создаем директории для notebooks...'
+      mkdir -p /mnt/data/jupyter/notebooks
+
+      echo 'Создаем новый контейнер...'
+      docker run \
+        -d \
+        --name ${ContainerName} \
+        --restart=always \
+        -e JUPYTER_TOKEN=${JUPYTER_TOKEN} \
+        -e AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
+        -e AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
+        -e MINIO_ENDPOINT=${MINIO_ENDPOINT} \
+        -e TRINO_HOST=${TRINO_HOST} \
+        -p 8888:8888 \
+        -v /mnt/data/jupyter/notebooks:/home/jovyan/work \
+        -h ${SRV_APP} \
+        ${ImageName}
+
+      echo "=========================================================================================="
+      echo 'ГОТОВО!'
+      echo "=========================================================================================="
+      echo 'Проверяем состояние контейнера:'
+      sleep 10
+      docker ps -a --filter name=${ContainerName}
+      echo '------------------------------------------------------------------------------------------'
+      echo 'Логи контейнера:'
+      docker logs ${ContainerName}
+      echo '------------------------------------------------------------------------------------------'
+      echo 'Проверяем доступность Jupyter API:'
+      sleep 5
+      curl -f http://localhost:8888/api || echo 'ВНИМАНИЕ: Jupyter API еще не доступен. Дождитесь полной инициализации.'
+      echo '------------------------------------------------------------------------------------------'
+
+      DEPLOY_SCRIPT
+
+      echo "Копируем конфигурационные файлы и образ на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
+      rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
+
+      # Копируем Docker образ на целевой сервер
+      echo "Экспортируем Docker образ..."
+      docker save jupyter-datalake:latest | gzip > jupyter-latest.tar.gz
+
+      echo "Копируем образ на ${SRV_APP}..."
+      rsync -avz ./jupyter-latest.tar.gz svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/
+
+      echo "Загружаем образ на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
+        docker load < jupyter-latest.tar.gz"
+
+      echo "Запускаем скрипт деплоя на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
+        export ContainerName=${ContainerName} && \
+        export ImageName=${ImageName} && \
+        export SRV_APP=${SRV_APP} && \
+        export JUPYTER_TOKEN='${JUPYTER_TOKEN}' && \
+        export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID}' && \
+        export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY}' && \
+        export MINIO_ENDPOINT='${MINIO_ENDPOINT}' && \
+        export TRINO_HOST='${TRINO_HOST}' && \
+        chmod u+x ./build.sh && ./build.sh"
+
+      echo "Удаляем временные файлы с ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
 ```
+
+**Настройка переменных окружения в GitLab**:
+
+В настройках CI/CD вашего проекта GitLab (`Settings > CI/CD > Variables`) добавьте:
+
+| Переменная | Значение | Тип |
+|-----------|----------|-----|
+| `JUPYTER_TOKEN` | `<secure_token>` | Variable (Masked) |
+| `AWS_ACCESS_KEY_ID` | `jupyter` | Variable |
+| `AWS_SECRET_ACCESS_KEY` | `<password_from_minio>` | Variable (Masked) |
+| `MINIO_ENDPOINT` | `https://minio.company.com:9000` | Variable |
+| `TRINO_HOST` | `trino.company.com` | Variable |
+
+**Примечание**:
+- Замените `your_runner_tag` на тег вашего GitLab Runner
+- Замените `svc_user` на пользователя для SSH подключения
+- Docker образ копируется на целевой сервер для изоляции от registry
+- Notebooks сохраняются в `/mnt/data/jupyter/notebooks` и персистентны между перезапусками
 
 ---
 

@@ -217,35 +217,126 @@ curl -f http://kafka-connect.company.com:8083/
 `.gitlab-ci.yml`:
 
 ```yaml
+variables:
+  GIT_STRATEGY: clone
+
 stages:
   - build
   - deploy
 
-variables:
-  IMAGE_TAG: ${CI_COMMIT_REF_NAME}-${CI_COMMIT_SHORT_SHA}
-  REGISTRY: registry.company.com
-  TARGET_HOST: kafka-connect.company.com
-
-build:
+Build Kafka Connect Image:
   stage: build
+  tags: [your_runner_tag]
   script:
-    - docker build -t ${REGISTRY}/kafka-connect-datalake:${IMAGE_TAG} .
-    - docker tag ${REGISTRY}/kafka-connect-datalake:${IMAGE_TAG} ${REGISTRY}/kafka-connect-datalake:latest
-    - docker push ${REGISTRY}/kafka-connect-datalake:${IMAGE_TAG}
-    - docker push ${REGISTRY}/kafka-connect-datalake:latest
+    - docker build -t kafka-connect-datalake:${CI_COMMIT_SHORT_SHA} .
+    - docker tag kafka-connect-datalake:${CI_COMMIT_SHORT_SHA} kafka-connect-datalake:latest
   only:
     - main
 
-deploy:
+Deploy Kafka Connect to TEST:
   stage: deploy
-  script:
-    - ssh deploy@${TARGET_HOST} "docker pull ${REGISTRY}/kafka-connect-datalake:latest"
-    - ssh deploy@${TARGET_HOST} "docker stop kafka-connect || true && docker rm kafka-connect || true"
-    - ssh deploy@${TARGET_HOST} "docker run -d --name kafka-connect --restart unless-stopped -p 8083:8083 --env-file /opt/kafka-connect/.env ${REGISTRY}/kafka-connect-datalake:latest"
-  only:
-    - main
+  tags: [your_runner_tag]
+  needs: [Build Kafka Connect Image]
   when: manual
+  allow_failure: false
+  before_script:
+    - SRV_APP="kafka-connect.company.com"
+    - KAFKA_BOOTSTRAP="kafka-broker1:9092,kafka-broker2:9092,kafka-broker3:9092"
+  script:
+    - |
+      # Создаем переменную с названием образа
+      ImageName=kafka-connect-datalake:latest
+
+      # Создаем переменную с названием контейнера
+      ContainerName=kafka-connect
+
+      # Создаем скрипт деплоя
+      echo "set -e" > build.sh
+      cat >> build.sh << 'DEPLOY_SCRIPT'
+
+      echo 'Останавливаем и удаляем старый контейнер...'
+      docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
+
+      echo 'Создаем новый контейнер...'
+      docker run \
+        -d \
+        --name ${ContainerName} \
+        --restart=always \
+        -e CONNECT_BOOTSTRAP_SERVERS="${KAFKA_BOOTSTRAP}" \
+        -e CONNECT_REST_ADVERTISED_HOST_NAME="${SRV_APP}" \
+        -e CONNECT_GROUP_ID="datalake-connect-cluster" \
+        -e CONNECT_CONFIG_STORAGE_TOPIC="datalake-connect-configs" \
+        -e CONNECT_OFFSET_STORAGE_TOPIC="datalake-connect-offsets" \
+        -e CONNECT_STATUS_STORAGE_TOPIC="datalake-connect-status" \
+        -e CONNECT_KEY_CONVERTER="org.apache.kafka.connect.storage.StringConverter" \
+        -e CONNECT_VALUE_CONVERTER="org.apache.kafka.connect.json.JsonConverter" \
+        -e CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE="false" \
+        -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+        -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+        -p 8083:8083 \
+        -h ${SRV_APP} \
+        ${ImageName}
+
+      echo "=========================================================================================="
+      echo 'ГОТОВО!'
+      echo "=========================================================================================="
+      echo 'Проверяем состояние контейнера:'
+      sleep 10
+      docker ps -a --filter name=${ContainerName}
+      echo '------------------------------------------------------------------------------------------'
+      echo 'Логи контейнера:'
+      docker logs ${ContainerName}
+      echo '------------------------------------------------------------------------------------------'
+      echo 'Проверяем доступность REST API:'
+      sleep 5
+      curl -f http://localhost:8083/ || echo 'ВНИМАНИЕ: REST API еще не доступен. Дождитесь полной инициализации.'
+      echo '------------------------------------------------------------------------------------------'
+
+      DEPLOY_SCRIPT
+
+      echo "Копируем конфигурационные файлы и образ на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
+      rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
+
+      # Копируем Docker образ на целевой сервер
+      echo "Экспортируем Docker образ..."
+      docker save kafka-connect-datalake:latest | gzip > kafka-connect-latest.tar.gz
+
+      echo "Копируем образ на ${SRV_APP}..."
+      rsync -avz ./kafka-connect-latest.tar.gz svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/
+
+      echo "Загружаем образ на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
+        docker load < kafka-connect-latest.tar.gz"
+
+      echo "Запускаем скрипт деплоя на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
+        export ContainerName=${ContainerName} && \
+        export ImageName=${ImageName} && \
+        export SRV_APP=${SRV_APP} && \
+        export KAFKA_BOOTSTRAP='${KAFKA_BOOTSTRAP}' && \
+        export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID}' && \
+        export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY}' && \
+        chmod u+x ./build.sh && ./build.sh"
+
+      echo "Удаляем временные файлы с ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
 ```
+
+**Настройка переменных окружения в GitLab**:
+
+В настройках CI/CD вашего проекта GitLab (`Settings > CI/CD > Variables`) добавьте:
+
+| Переменная | Значение | Тип |
+|-----------|----------|-----|
+| `AWS_ACCESS_KEY_ID` | `kafka-connect` | Variable |
+| `AWS_SECRET_ACCESS_KEY` | `<password_from_minio>` | Variable (Masked) |
+
+**Примечание**:
+- Замените `your_runner_tag` на тег вашего GitLab Runner
+- Замените `svc_user` на пользователя для SSH подключения
+- Укажите корректные адреса Kafka брокеров в `KAFKA_BOOTSTRAP`
+- Docker образ копируется на целевой сервер для изоляции от registry
 
 ---
 

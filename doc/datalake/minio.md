@@ -129,35 +129,187 @@ curl -f https://minio.company.com:9000/minio/health/live
 `.gitlab-ci.yml`:
 
 ```yaml
+variables:
+  GIT_STRATEGY: clone
+
 stages:
-  - build
   - deploy
 
-variables:
-  IMAGE_TAG: ${CI_COMMIT_REF_NAME}-${CI_COMMIT_SHORT_SHA}
-  REGISTRY: registry.company.com
-  TARGET_HOST: minio.company.com
-
-build:
-  stage: build
-  script:
-    - docker build -t ${REGISTRY}/minio-datalake:${IMAGE_TAG} .
-    - docker tag ${REGISTRY}/minio-datalake:${IMAGE_TAG} ${REGISTRY}/minio-datalake:latest
-    - docker push ${REGISTRY}/minio-datalake:${IMAGE_TAG}
-    - docker push ${REGISTRY}/minio-datalake:latest
-  only:
-    - main
-
-deploy:
+Deploy MinIO to TEST:
   stage: deploy
-  script:
-    - ssh deploy@${TARGET_HOST} "docker pull ${REGISTRY}/minio-datalake:latest"
-    - ssh deploy@${TARGET_HOST} "docker stop minio || true && docker rm minio || true"
-    - ssh deploy@${TARGET_HOST} "docker run -d --name minio --restart unless-stopped -p 9000:9000 -p 9001:9001 --env-file /opt/minio/.env -v /mnt/data:/data -v /etc/ssl/certs/minio.crt:/root/.minio/certs/public.crt:ro -v /etc/ssl/certs/minio.key:/root/.minio/certs/private.key:ro ${REGISTRY}/minio-datalake:latest"
-  only:
-    - main
+  tags: [your_runner_tag]  # Укажите тег вашего GitLab Runner
+  needs: []
   when: manual
+  allow_failure: false
+  before_script:
+    - BALANSER_NAME="minio.company.com"  # Балансировщик (если есть)
+    - SRV_APP="minio.company.com"        # Целевой сервер
+  script:
+    - |
+      # Создаем переменную с названием образа
+      ImageName=minio/minio:RELEASE.2024-12-13T22-19-12Z
+
+      # Создаем переменную с названием контейнера
+      ContainerName=minio
+
+      # Создаем скрипт деплоя
+      echo "set -e" > build.sh
+      cat >> build.sh << 'DEPLOY_SCRIPT'
+
+      echo 'Останавливаем и удаляем старый контейнер...'
+      docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
+
+      echo 'Создаем директории для данных...'
+      mkdir -p /mnt/data
+
+      echo 'Создаем новый контейнер...'
+      docker run \
+        -d \
+        --name ${ContainerName} \
+        --restart=always \
+        -e MINIO_ROOT_USER=${MINIO_ROOT_USER} \
+        -e MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD} \
+        -e MINIO_REGION_NAME=us-east-1 \
+        -e MINIO_SERVER_URL="https://${BALANSER_NAME}:9000" \
+        -e MINIO_BROWSER_URL="https://${BALANSER_NAME}:9001" \
+        -p 9000:9000 \
+        -p 9001:9001 \
+        -v /mnt/data:/data \
+        -v /etc/ssl/certs/minio.crt:/root/.minio/certs/public.crt:ro \
+        -v /etc/ssl/certs/minio.key:/root/.minio/certs/private.key:ro \
+        -h ${SRV_APP} \
+        ${ImageName} \
+        server /data --console-address ":9001"
+
+      echo "=========================================================================================="
+      echo 'ГОТОВО!'
+      echo "=========================================================================================="
+      echo 'Проверяем состояние контейнера:'
+      sleep 10
+      docker ps -a --filter name=${ContainerName}
+      echo '------------------------------------------------------------------------------------------'
+      echo 'Логи контейнера:'
+      docker logs ${ContainerName}
+      echo '------------------------------------------------------------------------------------------'
+
+      DEPLOY_SCRIPT
+
+      echo "Копируем скрипт на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
+      rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
+
+      echo "Запускаем скрипт деплоя на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
+        export ContainerName=${ContainerName} && \
+        export ImageName=${ImageName} && \
+        export SRV_APP=${SRV_APP} && \
+        export BALANSER_NAME=${BALANSER_NAME} && \
+        export MINIO_ROOT_USER='${MINIO_ROOT_USER}' && \
+        export MINIO_ROOT_PASSWORD='${MINIO_ROOT_PASSWORD}' && \
+        chmod u+x ./build.sh && ./build.sh"
+
+      echo "Удаляем временные файлы с ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
+
+Init MinIO to TEST:
+  stage: deploy
+  tags: [your_runner_tag]
+  needs: []
+  when: manual
+  allow_failure: false
+  before_script:
+    - BALANSER_NAME="minio.company.com"
+    - SRV_APP="minio.company.com"
+  script:
+    - |
+      # Создаем переменную с названием образа
+      ImageName=minio/mc:latest
+
+      # Создаем переменную с названием контейнера
+      ContainerName=minio-init
+
+      # Создаем скрипт деплоя
+      echo "set -e" > build.sh
+      cat >> build.sh << 'DEPLOY_SCRIPT'
+
+      echo 'Останавливаем и удаляем старый init контейнер...'
+      docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
+
+      echo 'Запускаем init контейнер...'
+      docker run \
+        --network host \
+        --entrypoint /bin/sh \
+        -d \
+        --name ${ContainerName} \
+        -e MINIO_ROOT_USER=${MINIO_ROOT_USER} \
+        -e MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD} \
+        -e HIVE_METASTORE_USER=${HIVE_METASTORE_USER} \
+        -e HIVE_METASTORE_PASSWORD=${HIVE_METASTORE_PASSWORD} \
+        -e KAFKA_CONNECT_USER=${KAFKA_CONNECT_USER} \
+        -e KAFKA_CONNECT_PASSWORD=${KAFKA_CONNECT_PASSWORD} \
+        -e TRINO_USER=${TRINO_USER} \
+        -e TRINO_PASSWORD=${TRINO_PASSWORD} \
+        -v ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/init-minio.sh:/init-minio.sh \
+        -h ${SRV_APP} \
+        ${ImageName} /init-minio.sh
+
+      echo "=========================================================================================="
+      echo 'ГОТОВО!'
+      echo "=========================================================================================="
+      echo 'Проверяем состояние контейнера:'
+      sleep 10
+      docker ps -a --filter name=${ContainerName}
+      echo '------------------------------------------------------------------------------------------'
+      echo 'Логи контейнера:'
+      docker logs ${ContainerName}
+      echo '------------------------------------------------------------------------------------------'
+
+      DEPLOY_SCRIPT
+
+      echo "Копируем init скрипт и build скрипт на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
+      rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
+
+      echo "Запускаем скрипт инициализации на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
+        export ContainerName=${ContainerName} && \
+        export ImageName=${ImageName} && \
+        export SRV_APP=${SRV_APP} && \
+        export CI_PROJECT_NAME=${CI_PROJECT_NAME} && \
+        export CI_COMMIT_SHORT_SHA=${CI_COMMIT_SHORT_SHA} && \
+        export CI_JOB_ID=${CI_JOB_ID} && \
+        export MINIO_ROOT_USER='${MINIO_ROOT_USER}' && \
+        export MINIO_ROOT_PASSWORD='${MINIO_ROOT_PASSWORD}' && \
+        export HIVE_METASTORE_USER='${HIVE_METASTORE_USER}' && \
+        export HIVE_METASTORE_PASSWORD='${HIVE_METASTORE_PASSWORD}' && \
+        export KAFKA_CONNECT_USER='${KAFKA_CONNECT_USER}' && \
+        export KAFKA_CONNECT_PASSWORD='${KAFKA_CONNECT_PASSWORD}' && \
+        export TRINO_USER='${TRINO_USER}' && \
+        export TRINO_PASSWORD='${TRINO_PASSWORD}' && \
+        chmod u+x ./build.sh && ./build.sh"
+
+      # НЕ удаляем временные файлы, чтобы init-minio.sh был доступен для контейнера
 ```
+
+**Настройка переменных окружения в GitLab**:
+
+В настройках CI/CD вашего проекта GitLab (`Settings > CI/CD > Variables`) добавьте:
+
+| Переменная | Значение | Тип |
+|-----------|----------|-----|
+| `MINIO_ROOT_USER` | `admin_datalake_2024` | Variable |
+| `MINIO_ROOT_PASSWORD` | `<secure_password>` | Variable (Masked) |
+| `HIVE_METASTORE_USER` | `hive-metastore` | Variable |
+| `HIVE_METASTORE_PASSWORD` | `<secure_password>` | Variable (Masked) |
+| `KAFKA_CONNECT_USER` | `kafka-connect` | Variable |
+| `KAFKA_CONNECT_PASSWORD` | `<secure_password>` | Variable (Masked) |
+| `TRINO_USER` | `trino` | Variable |
+| `TRINO_PASSWORD` | `<secure_password>` | Variable (Masked) |
+
+**Примечание**:
+- Замените `your_runner_tag` на тег вашего GitLab Runner
+- Замените `svc_user` на пользователя для SSH подключения
+- Job `Init MinIO to TEST` запускайте ПОСЛЕ успешного деплоя MinIO для создания buckets и пользователей
 
 ---
 
