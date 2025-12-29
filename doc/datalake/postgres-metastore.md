@@ -217,7 +217,7 @@ Deploy PostgreSQL Metastore to TEST:
 
       # Создаем скрипт деплоя
       echo "set -e" > build.sh
-      cat >> build.sh << 'DEPLOY_SCRIPT'
+      cat >> build.sh << DEPLOY_SCRIPT
 
       echo 'Останавливаем и удаляем старый контейнер...'
       docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
@@ -269,12 +269,6 @@ Deploy PostgreSQL Metastore to TEST:
 
       echo "Запускаем скрипт деплоя на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
-        export ContainerName=${ContainerName} && \
-        export ImageName=${ImageName} && \
-        export SRV_APP=${SRV_APP} && \
-        export POSTGRES_DB=${POSTGRES_DB} && \
-        export POSTGRES_USER=${POSTGRES_USER} && \
-        export POSTGRES_PASSWORD='${POSTGRES_PASSWORD}' && \
         chmod u+x ./build.sh && ./build.sh"
 
       echo "Удаляем временные файлы с ${SRV_APP}..."

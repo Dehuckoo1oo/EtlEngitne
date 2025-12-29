@@ -154,7 +154,7 @@ Deploy MinIO to TEST:
 
       # Создаем скрипт деплоя
       echo "set -e" > build.sh
-      cat >> build.sh << 'DEPLOY_SCRIPT'
+      cat >> build.sh << DEPLOY_SCRIPT
 
       echo 'Останавливаем и удаляем старый контейнер...'
       docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
@@ -200,12 +200,6 @@ Deploy MinIO to TEST:
 
       echo "Запускаем скрипт деплоя на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
-        export ContainerName=${ContainerName} && \
-        export ImageName=${ImageName} && \
-        export SRV_APP=${SRV_APP} && \
-        export BALANSER_NAME=${BALANSER_NAME} && \
-        export MINIO_ROOT_USER='${MINIO_ROOT_USER}' && \
-        export MINIO_ROOT_PASSWORD='${MINIO_ROOT_PASSWORD}' && \
         chmod u+x ./build.sh && ./build.sh"
 
       echo "Удаляем временные файлы с ${SRV_APP}..."
@@ -230,7 +224,7 @@ Init MinIO to TEST:
 
       # Создаем скрипт деплоя
       echo "set -e" > build.sh
-      cat >> build.sh << 'DEPLOY_SCRIPT'
+      cat >> build.sh << DEPLOY_SCRIPT
 
       echo 'Останавливаем и удаляем старый init контейнер...'
       docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
@@ -272,20 +266,6 @@ Init MinIO to TEST:
 
       echo "Запускаем скрипт инициализации на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
-        export ContainerName=${ContainerName} && \
-        export ImageName=${ImageName} && \
-        export SRV_APP=${SRV_APP} && \
-        export CI_PROJECT_NAME=${CI_PROJECT_NAME} && \
-        export CI_COMMIT_SHORT_SHA=${CI_COMMIT_SHORT_SHA} && \
-        export CI_JOB_ID=${CI_JOB_ID} && \
-        export MINIO_ROOT_USER='${MINIO_ROOT_USER}' && \
-        export MINIO_ROOT_PASSWORD='${MINIO_ROOT_PASSWORD}' && \
-        export HIVE_METASTORE_USER='${HIVE_METASTORE_USER}' && \
-        export HIVE_METASTORE_PASSWORD='${HIVE_METASTORE_PASSWORD}' && \
-        export KAFKA_CONNECT_USER='${KAFKA_CONNECT_USER}' && \
-        export KAFKA_CONNECT_PASSWORD='${KAFKA_CONNECT_PASSWORD}' && \
-        export TRINO_USER='${TRINO_USER}' && \
-        export TRINO_PASSWORD='${TRINO_PASSWORD}' && \
         chmod u+x ./build.sh && ./build.sh"
 
       # НЕ удаляем временные файлы, чтобы init-minio.sh был доступен для контейнера

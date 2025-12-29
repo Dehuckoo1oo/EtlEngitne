@@ -196,7 +196,7 @@ Deploy Jupyter to TEST:
 
       # Создаем скрипт деплоя
       echo "set -e" > build.sh
-      cat >> build.sh << 'DEPLOY_SCRIPT'
+      cat >> build.sh << DEPLOY_SCRIPT
 
       echo 'Останавливаем и удаляем старый контейнер...'
       docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
@@ -253,14 +253,6 @@ Deploy Jupyter to TEST:
 
       echo "Запускаем скрипт деплоя на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
-        export ContainerName=${ContainerName} && \
-        export ImageName=${ImageName} && \
-        export SRV_APP=${SRV_APP} && \
-        export JUPYTER_TOKEN='${JUPYTER_TOKEN}' && \
-        export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID}' && \
-        export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY}' && \
-        export MINIO_ENDPOINT='${MINIO_ENDPOINT}' && \
-        export TRINO_HOST='${TRINO_HOST}' && \
         chmod u+x ./build.sh && ./build.sh"
 
       echo "Удаляем временные файлы с ${SRV_APP}..."

@@ -233,7 +233,7 @@ Deploy Hive Metastore to TEST:
 
       # Создаем скрипт деплоя
       echo "set -e" > build.sh
-      cat >> build.sh << 'DEPLOY_SCRIPT'
+      cat >> build.sh << DEPLOY_SCRIPT
 
       echo '==========================================================================================='
       echo 'Проверка зависимостей перед деплоем...'
@@ -300,14 +300,6 @@ Deploy Hive Metastore to TEST:
 
       echo "Запускаем скрипт деплоя на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
-        export ContainerName=${ContainerName} && \
-        export ImageName=${ImageName} && \
-        export SRV_APP=${SRV_APP} && \
-        export POSTGRES_HOST=${POSTGRES_HOST} && \
-        export MINIO_HOST=${MINIO_HOST} && \
-        export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID}' && \
-        export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY}' && \
-        export SERVICE_OPTS='${SERVICE_OPTS}' && \
         chmod u+x ./build.sh && ./build.sh"
 
       echo "Удаляем временные файлы с ${SRV_APP}..."

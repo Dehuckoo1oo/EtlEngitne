@@ -286,7 +286,7 @@ Deploy Trino to TEST:
 
       # Создаем скрипт деплоя
       echo "set -e" > build.sh
-      cat >> build.sh << 'DEPLOY_SCRIPT'
+      cat >> build.sh << DEPLOY_SCRIPT
 
       echo '==========================================================================================='
       echo 'Проверка зависимостей перед деплоем...'
@@ -352,12 +352,6 @@ Deploy Trino to TEST:
 
       echo "Запускаем скрипт деплоя на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
-        export ContainerName=${ContainerName} && \
-        export ImageName=${ImageName} && \
-        export SRV_APP=${SRV_APP} && \
-        export HIVE_METASTORE=${HIVE_METASTORE} && \
-        export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID}' && \
-        export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY}' && \
         chmod u+x ./build.sh && ./build.sh"
 
       echo "Удаляем временные файлы с ${SRV_APP}..."
