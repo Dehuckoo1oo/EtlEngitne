@@ -23,6 +23,8 @@
 ```
 jupyter/
 ├── Dockerfile
+├── config/
+│   └── pip.conf
 ├── requirements.txt
 ├── .env.example
 ├── .gitlab-ci.yml
@@ -36,7 +38,7 @@ jupyter/
 `jupyter/Dockerfile`:
 
 ```dockerfile
-FROM jupyter/scipy-notebook:latest
+FROM registry.company.com/jupyter/scipy-notebook:latest
 
 USER root
 
@@ -45,12 +47,15 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Настроить pip для работы с Nexus PyPI
+COPY config/pip.conf /etc/pip.conf
+
 USER jovyan
 
 # Копировать requirements
 COPY requirements.txt /tmp/
 
-# Установка Python пакетов
+# Установка Python пакетов через Nexus
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Создать рабочую директорию
@@ -68,6 +73,22 @@ CMD ["start-notebook.sh", "--NotebookApp.token=''", "--NotebookApp.password=''"]
 ```
 
 **Примечание**: В MVP отключена аутентификация (`token=''`). Авторизация пользователей — шаг 2 (см. [advanced/next-stage.md](advanced/next-stage.md)).
+
+---
+
+## Конфигурационные файлы
+
+### pip.conf
+
+`config/pip.conf`:
+
+```ini
+[global]
+index-url = https://nexus.company.com/repository/pypi/simple
+trusted-host = nexus.company.com
+```
+
+**Примечание**: Замените `nexus.company.com` на реальный адрес вашего Nexus сервера с PyPI proxy.
 
 ---
 

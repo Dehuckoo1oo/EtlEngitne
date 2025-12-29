@@ -25,7 +25,8 @@ MVP: один инстанс, без HA и балансировщиков.
 hive-metastore/
 ├── Dockerfile
 ├── config/
-│   └── core-site.xml
+│   ├── core-site.xml
+│   └── maven-settings.xml
 ├── .env.example
 ├── .gitlab-ci.yml
 └── README.md
@@ -38,19 +39,35 @@ hive-metastore/
 `hive-metastore/Dockerfile`:
 
 ```dockerfile
-FROM apache/hive:4.0.0
+# Stage 1: Builder для скачивания зависимостей через Maven
+FROM registry.company.com/maven:3.9-eclipse-temurin-11 AS builder
+
+# Копировать maven-settings.xml с настройкой Nexus
+COPY config/maven-settings.xml /root/.m2/settings.xml
+
+# Скачать JDBC и S3 библиотеки через Nexus proxy
+RUN mvn dependency:copy -Dartifact=org.postgresql:postgresql:42.7.1:jar -DoutputDirectory=/jars && \
+    mvn dependency:copy -Dartifact=org.apache.hadoop:hadoop-aws:3.3.4:jar -DoutputDirectory=/jars && \
+    mvn dependency:copy -Dartifact=com.amazonaws:aws-java-sdk-bundle:1.12.262:jar -DoutputDirectory=/jars
+
+# Stage 2: Final образ
+FROM registry.company.com/apache/hive:4.0.0
 
 USER root
 
-# Установить JDBC и S3 библиотеки
+# Установить только netcat для healthcheck (wget больше не нужен)
 RUN apt-get update && \
-    apt-get install -y wget netcat-openbsd && \
-    wget -q https://jdbc.postgresql.org/download/postgresql-42.7.1.jar -O /opt/hive/lib/postgresql-jdbc.jar && \
-    wget -q https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar -O /opt/hadoop/share/hadoop/tools/lib/hadoop-aws-3.3.4.jar && \
-    wget -q https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar -O /opt/hadoop/share/hadoop/tools/lib/aws-java-sdk-bundle-1.12.262.jar && \
-    ln -s /opt/hadoop/share/hadoop/tools/lib/hadoop-aws-3.3.4.jar /opt/hive/lib/hadoop-aws-3.3.4.jar && \
-    ln -s /opt/hadoop/share/hadoop/tools/lib/aws-java-sdk-bundle-1.12.262.jar /opt/hive/lib/aws-java-sdk-bundle-1.12.262.jar && \
+    apt-get install -y netcat-openbsd && \
     rm -rf /var/lib/apt/lists/*
+
+# Копировать JAR библиотеки из builder stage
+COPY --from=builder /jars/postgresql-42.7.1.jar /opt/hive/lib/postgresql-jdbc.jar
+COPY --from=builder /jars/hadoop-aws-3.3.4.jar /opt/hadoop/share/hadoop/tools/lib/hadoop-aws-3.3.4.jar
+COPY --from=builder /jars/aws-java-sdk-bundle-1.12.262.jar /opt/hadoop/share/hadoop/tools/lib/aws-java-sdk-bundle-1.12.262.jar
+
+# Создать symlinks для hive
+RUN ln -s /opt/hadoop/share/hadoop/tools/lib/hadoop-aws-3.3.4.jar /opt/hive/lib/hadoop-aws-3.3.4.jar && \
+    ln -s /opt/hadoop/share/hadoop/tools/lib/aws-java-sdk-bundle-1.12.262.jar /opt/hive/lib/aws-java-sdk-bundle-1.12.262.jar
 
 # Конфиг S3
 COPY config/core-site.xml /opt/hadoop/etc/hadoop/core-site.xml
@@ -103,6 +120,25 @@ ENTRYPOINT ["/entrypoint.sh"]
   </property>
 </configuration>
 ```
+
+### maven-settings.xml
+
+`config/maven-settings.xml`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<settings>
+  <mirrors>
+    <mirror>
+      <id>nexus</id>
+      <mirrorOf>*</mirrorOf>
+      <url>https://nexus.company.com/repository/maven-public</url>
+    </mirror>
+  </mirrors>
+</settings>
+```
+
+**Примечание**: Замените `nexus.company.com` на реальный адрес вашего Nexus сервера.
 
 ---
 

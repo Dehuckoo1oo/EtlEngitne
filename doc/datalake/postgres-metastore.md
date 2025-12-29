@@ -37,12 +37,12 @@ postgres-metastore/
 
 ## Dockerfile (Опционально)
 
-**ВАЖНО**: Для MVP рекомендуется использовать стандартный образ `postgres:15-alpine` без кастомного Dockerfile. Конфигурационные файлы монтируются через volumes при запуске контейнера.
+**ВАЖНО**: Для MVP рекомендуется использовать образ `registry.company.com/postgres:15-alpine` без кастомного Dockerfile. Конфигурационные файлы монтируются через volumes при запуске контейнера.
 
 Если требуется кастомный образ, используйте следующий `Dockerfile`:
 
 ```dockerfile
-FROM postgres:15-alpine
+FROM registry.company.com/postgres:15-alpine
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

@@ -37,7 +37,7 @@ minio/
 `minio/Dockerfile`:
 
 ```dockerfile
-FROM minio/minio:RELEASE.2024-12-13T22-19-12Z
+FROM registry.company.com/minio/minio:RELEASE.2024-12-13T22-19-12Z
 
 # Копируем SSL сертификаты
 COPY --from=certs /etc/ssl/certs/minio.crt /root/.minio/certs/public.crt
@@ -299,9 +299,21 @@ Init MinIO to TEST:
 
 ```bash
 # Установить MinIO Client
-wget https://dl.min.io/client/mc/release/linux-amd64/mc
+
+# Вариант 1: Через корпоративный Nexus (если настроен raw proxy)
+wget https://nexus.company.com/repository/raw-proxy/minio-client/mc
 chmod +x mc
 sudo mv mc /usr/local/bin/
+
+# Вариант 2: Использовать Docker контейнер MinIO Client
+# docker run --rm -it --entrypoint=/bin/sh registry.company.com/minio/mc
+# или создать alias для удобства:
+# alias mc='docker run --rm -it --network=host registry.company.com/minio/mc'
+
+# Вариант 3: Если доступен dl.min.io через proxy
+# wget https://dl.min.io/client/mc/release/linux-amd64/mc
+# chmod +x mc
+# sudo mv mc /usr/local/bin/
 
 # Настроить alias
 mc alias set datalake https://minio.company.com:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}

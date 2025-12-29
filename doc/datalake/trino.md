@@ -45,7 +45,7 @@ trino/
 `trino/Dockerfile`:
 
 ```dockerfile
-FROM trinodb/trino:435
+FROM registry.company.com/trinodb/trino:435
 
 USER root
 
@@ -369,9 +369,19 @@ Deploy Trino to TEST:
 
 ```bash
 # Установить Trino CLI
-wget https://repo1.maven.org/maven2/io/trino/trino-cli/435/trino-cli-435-executable.jar
+
+# Вариант 1: Скачать через Nexus напрямую
+wget https://nexus.company.com/repository/maven-public/io/trino/trino-cli/435/trino-cli-435-executable.jar
 chmod +x trino-cli-435-executable.jar
 sudo mv trino-cli-435-executable.jar /usr/local/bin/trino
+
+# Вариант 2: Использовать Maven (если maven-settings.xml настроен на Nexus)
+# mvn dependency:copy \
+#   -Dartifact=io.trino:trino-cli:435:jar:executable \
+#   -DoutputDirectory=. \
+#   -s /path/to/maven-settings.xml
+# chmod +x trino-cli-435-executable.jar
+# sudo mv trino-cli-435-executable.jar /usr/local/bin/trino
 
 # Подключиться
 trino --server http://trino.company.com:8080 --catalog iceberg --schema default

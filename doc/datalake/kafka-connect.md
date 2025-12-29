@@ -40,11 +40,11 @@ kafka-connect/
 `kafka-connect/Dockerfile`:
 
 ```dockerfile
-FROM confluentinc/cp-kafka-connect:7.5.0
+FROM registry.company.com/confluentinc/cp-kafka-connect:7.5.0
 
 USER root
 
-# Установить S3 Sink Connector
+# Установить S3 Sink Connector через confluent-hub
 RUN confluent-hub install --no-prompt confluentinc/kafka-connect-s3:10.5.0
 
 # Скопировать конфиги
@@ -58,6 +58,17 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
   CMD curl -f http://localhost:8083/ || exit 1
 
 EXPOSE 8083
+```
+
+**Примечание по confluent-hub**: Если `confluent-hub` недоступен через корпоративную сеть, можно установить коннектор вручную:
+1. Скачайте ZIP архив с https://www.confluent.io/hub/confluentinc/kafka-connect-s3 вне корпоративной сети
+2. Загрузите архив в корпоративный репозиторий или разместите локально
+3. Измените Dockerfile:
+```dockerfile
+# Вместо confluent-hub install, скопируйте архив и разархивируйте:
+COPY connectors/confluentinc-kafka-connect-s3-10.5.0.zip /tmp/
+RUN unzip /tmp/confluentinc-kafka-connect-s3-10.5.0.zip -d /usr/share/confluent-hub-components/ && \
+    rm /tmp/confluentinc-kafka-connect-s3-10.5.0.zip
 ```
 
 ---
