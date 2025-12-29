@@ -45,11 +45,9 @@ FROM registry.company.com/maven:3.9-eclipse-temurin-11 AS builder
 # Копировать maven-settings.xml с настройкой Nexus
 COPY config/maven-settings.xml /root/.m2/settings.xml
 
-# Отключить SSL проверку на уровне Maven (ОБЯЗАТЕЛЬНО для корпоративных Nexus с самоподписанными сертификатами)
+# Отключить SSL проверку на уровне Maven и Java (ОБЯЗАТЕЛЬНО для корпоративных Nexus с самоподписанными сертификатами)
 ENV MAVEN_OPTS="-Dmaven.wagon.http.ssl.insecure=true -Dmaven.wagon.http.ssl.allowall=true -Dmaven.wagon.http.ssl.ignore.validity.dates=true"
-
-# Если MAVEN_OPTS не помогает, используйте более агрессивный подход:
-# ENV JAVA_TOOL_OPTIONS="-Dmaven.wagon.http.ssl.insecure=true -Dmaven.wagon.http.ssl.allowall=true"
+ENV JAVA_TOOL_OPTIONS="-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts -Djavax.net.ssl.trustStorePassword=changeit -Dmaven.wagon.http.ssl.insecure=true -Dmaven.wagon.http.ssl.allowall=true"
 
 # Скачать JDBC и S3 библиотеки через Nexus proxy
 RUN mvn -Dmaven.wagon.http.ssl.insecure=true \
