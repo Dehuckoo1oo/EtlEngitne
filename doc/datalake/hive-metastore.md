@@ -45,10 +45,22 @@ FROM registry.company.com/maven:3.9-eclipse-temurin-11 AS builder
 # Копировать maven-settings.xml с настройкой Nexus
 COPY config/maven-settings.xml /root/.m2/settings.xml
 
-# Скачать JDBC и S3 библиотеки через Nexus proxy
-RUN mvn dependency:copy -Dartifact=org.postgresql:postgresql:42.7.1:jar -DoutputDirectory=/jars && \
-    mvn dependency:copy -Dartifact=org.apache.hadoop:hadoop-aws:3.3.4:jar -DoutputDirectory=/jars && \
-    mvn dependency:copy -Dartifact=com.amazonaws:aws-java-sdk-bundle:1.12.262:jar -DoutputDirectory=/jars
+# Альтернатива (если не работает): отключить SSL проверку на уровне JVM
+# ENV JAVA_TOOL_OPTIONS="-Djavax.net.ssl.trustAll=true"
+
+# Скачать JDBC и S3 библиотеки через Nexus proxy (игнорируя SSL сертификаты)
+RUN mvn -Dmaven.wagon.http.ssl.insecure=true \
+        -Dmaven.wagon.http.ssl.allowall=true \
+        -Dmaven.wagon.http.ssl.ignore.validity.dates=true \
+        dependency:copy -Dartifact=org.postgresql:postgresql:42.7.1:jar -DoutputDirectory=/jars && \
+    mvn -Dmaven.wagon.http.ssl.insecure=true \
+        -Dmaven.wagon.http.ssl.allowall=true \
+        -Dmaven.wagon.http.ssl.ignore.validity.dates=true \
+        dependency:copy -Dartifact=org.apache.hadoop:hadoop-aws:3.3.4:jar -DoutputDirectory=/jars && \
+    mvn -Dmaven.wagon.http.ssl.insecure=true \
+        -Dmaven.wagon.http.ssl.allowall=true \
+        -Dmaven.wagon.http.ssl.ignore.validity.dates=true \
+        dependency:copy -Dartifact=com.amazonaws:aws-java-sdk-bundle:1.12.262:jar -DoutputDirectory=/jars
 
 # Stage 2: Final образ
 FROM registry.company.com/apache/hive:4.0.0
