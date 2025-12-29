@@ -50,15 +50,21 @@ ENV MAVEN_OPTS="-Dmaven.wagon.http.ssl.insecure=true -Dmaven.wagon.http.ssl.allo
 ENV JAVA_TOOL_OPTIONS="-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts -Djavax.net.ssl.trustStorePassword=changeit -Dmaven.wagon.http.ssl.insecure=true -Dmaven.wagon.http.ssl.allowall=true"
 
 # Скачать JDBC и S3 библиотеки через Nexus proxy
-RUN mvn -Dmaven.wagon.http.ssl.insecure=true \
+RUN mvn -U \
+        -Dmaven.resolver.transport=wagon \
+        -Dmaven.wagon.http.ssl.insecure=true \
         -Dmaven.wagon.http.ssl.allowall=true \
         -Dmaven.wagon.http.ssl.ignore.validity.dates=true \
         dependency:copy -Dartifact=org.postgresql:postgresql:42.7.1:jar -DoutputDirectory=/jars && \
-    mvn -Dmaven.wagon.http.ssl.insecure=true \
+    mvn -U \
+        -Dmaven.resolver.transport=wagon \
+        -Dmaven.wagon.http.ssl.insecure=true \
         -Dmaven.wagon.http.ssl.allowall=true \
         -Dmaven.wagon.http.ssl.ignore.validity.dates=true \
         dependency:copy -Dartifact=org.apache.hadoop:hadoop-aws:3.3.4:jar -DoutputDirectory=/jars && \
-    mvn -Dmaven.wagon.http.ssl.insecure=true \
+    mvn -U \
+        -Dmaven.resolver.transport=wagon \
+        -Dmaven.wagon.http.ssl.insecure=true \
         -Dmaven.wagon.http.ssl.allowall=true \
         -Dmaven.wagon.http.ssl.ignore.validity.dates=true \
         dependency:copy -Dartifact=com.amazonaws:aws-java-sdk-bundle:1.12.262:jar -DoutputDirectory=/jars
@@ -165,7 +171,8 @@ AWS_ACCESS_KEY_ID=hive-metastore
 AWS_SECRET_ACCESS_KEY=<PASSWORD_FROM_MINIO>
 
 # === Hive Metastore opts ===
-SERVICE_OPTS=-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres-metastore.company.com:5432/metastore_db -Djavax.jdo.option.ConnectionUserName=hive -Djavax.jdo.option.ConnectionPassword=<SECURE_PASSWORD> -Xms4g -Xmx4g
+# ВАЖНО: Значение должно быть в кавычках!
+SERVICE_OPTS="-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres-metastore.company.com:5432/metastore_db -Djavax.jdo.option.ConnectionUserName=hive -Djavax.jdo.option.ConnectionPassword=<SECURE_PASSWORD> -Xms4g -Xmx4g"
 ```
 
 ---
@@ -344,6 +351,8 @@ Deploy Hive Metastore to TEST:
 | `AWS_SECRET_ACCESS_KEY` | `<password_from_minio>` | Variable (Masked) |
 | `SERVICE_OPTS` | `-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres-metastore.company.com:5432/metastore_db -Djavax.jdo.option.ConnectionUserName=hive -Djavax.jdo.option.ConnectionPassword=<SECURE_PASSWORD> -Xms4g -Xmx4g` | Variable (Masked) |
 
+**ВАЖНО для SERVICE_OPTS**: В GitLab переменных НЕ нужны внешние кавычки, но в `.env` файле они обязательны!
+
 **Примечание**:
 - Замените `your_runner_tag` на тег вашего GitLab Runner
 - Замените `svc_user` на пользователя для SSH подключения
@@ -358,6 +367,82 @@ Deploy Hive Metastore to TEST:
 nc -zv hive-metastore.company.com 9083
 docker inspect hive-metastore | grep -A 5 Health
 ```
+
+---
+
+## Troubleshooting
+
+### Ошибка: "Could not find or load main class Djavax.jdo.option..."
+
+**Симптомы**:
+```
+Error: Could not find or load main class Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+Schema initialization failed!
+```
+
+**Причина**: В `SERVICE_OPTS` отсутствует дефис `-` перед `D`. Это происходит, если значение не обернуто в кавычки в `.env` файле.
+
+**Решение**:
+1. Если используете `.env` файл - оберните значение в кавычки:
+   ```bash
+   SERVICE_OPTS="-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver ..."
+   ```
+
+2. Если используете GitLab CI/CD переменные - кавычки НЕ нужны (GitLab сам обрабатывает значения корректно)
+
+3. Пересоздайте контейнер:
+   ```bash
+   docker stop hive-metastore && docker rm hive-metastore
+   # Запустите снова с исправленным .env
+   ```
+
+### Ошибка: "Connection refused" к PostgreSQL
+
+**Симптомы**: Hive не может подключиться к PostgreSQL
+
+**Причина**: Неправильная конфигурация `pg_hba.conf` или PostgreSQL недоступен
+
+**Решение**:
+1. Проверьте, что PostgreSQL запущен:
+   ```bash
+   docker ps | grep postgres-metastore
+   ```
+
+2. Проверьте доступность с машины Hive:
+   ```bash
+   pg_isready -h postgres-metastore.company.com -U hive
+   ```
+
+3. Убедитесь, что в `pg_hba.conf` разрешен доступ с IP адреса Hive машины:
+   ```
+   host    metastore_db    hive            0.0.0.0/0               scram-sha-256
+   ```
+
+4. Перезапустите PostgreSQL после изменения `pg_hba.conf`:
+   ```bash
+   docker restart postgres-metastore
+   ```
+
+### База данных не создается автоматически
+
+**Причина**: Переменные окружения PostgreSQL не были переданы при первом запуске контейнера
+
+**Решение**:
+1. Удалите данные PostgreSQL:
+   ```bash
+   docker stop postgres-metastore && docker rm postgres-metastore
+   rm -rf /mnt/data/postgres/*
+   ```
+
+2. Запустите заново с правильными переменными:
+   ```bash
+   docker run -d \
+     --name postgres-metastore \
+     -e POSTGRES_DB=metastore_db \
+     -e POSTGRES_USER=hive \
+     -e POSTGRES_PASSWORD=<SECURE_PASSWORD> \
+     ...
+   ```
 
 ---
 

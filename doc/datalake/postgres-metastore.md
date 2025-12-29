@@ -95,7 +95,17 @@ log_timezone = 'UTC'
 local   all             postgres                                peer
 local   all             all                                     md5
 host    all             all             127.0.0.1/32            scram-sha-256
-host    metastore_db    hive            10.0.0.0/8              scram-sha-256
+
+# Подключение для Hive Metastore
+host    metastore_db    hive            0.0.0.0/0               scram-sha-256
+
+# Подключение для администратора с любой машины
+host    all             postgres        0.0.0.0/0               scram-sha-256
+
+# ВАЖНО: Для продакшена замените 0.0.0.0/0 на конкретные подсети!
+# Примеры:
+# host    metastore_db    hive            10.0.0.0/8              scram-sha-256
+# host    all             postgres        192.168.1.0/24          scram-sha-256
 ```
 
 ---
@@ -163,7 +173,12 @@ cat > /opt/postgres-metastore/config/pg_hba.conf <<'EOF'
 local   all             postgres                                peer
 local   all             all                                     md5
 host    all             all             127.0.0.1/32            scram-sha-256
-host    metastore_db    hive            10.0.0.0/8              scram-sha-256
+
+# Подключение для Hive Metastore
+host    metastore_db    hive            0.0.0.0/0               scram-sha-256
+
+# Подключение для администратора с любой машины
+host    all             postgres        0.0.0.0/0               scram-sha-256
 EOF
 
 # 5. Запуск контейнера (без кастомного Dockerfile)
