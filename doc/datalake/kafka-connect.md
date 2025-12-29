@@ -221,22 +221,12 @@ variables:
   GIT_STRATEGY: clone
 
 stages:
-  - build
   - deploy
-
-Build Kafka Connect Image:
-  stage: build
-  tags: [your_runner_tag]
-  script:
-    - docker build -t kafka-connect-datalake:${CI_COMMIT_SHORT_SHA} .
-    - docker tag kafka-connect-datalake:${CI_COMMIT_SHORT_SHA} kafka-connect-datalake:latest
-  only:
-    - main
 
 Deploy Kafka Connect to TEST:
   stage: deploy
   tags: [your_runner_tag]
-  needs: [Build Kafka Connect Image]
+  needs: []
   when: manual
   allow_failure: false
   before_script:
@@ -244,6 +234,11 @@ Deploy Kafka Connect to TEST:
     - KAFKA_BOOTSTRAP="kafka-broker1:9092,kafka-broker2:9092,kafka-broker3:9092"
   script:
     - |
+      # Сборка Docker образа
+      echo "Собираем Docker образ..."
+      docker build -t kafka-connect-datalake:${CI_COMMIT_SHORT_SHA} .
+      docker tag kafka-connect-datalake:${CI_COMMIT_SHORT_SHA} kafka-connect-datalake:latest
+
       # Создаем переменную с названием образа
       ImageName=kafka-connect-datalake:latest
 
@@ -294,11 +289,11 @@ Deploy Kafka Connect to TEST:
 
       DEPLOY_SCRIPT
 
-      echo "Копируем конфигурационные файлы и образ на ${SRV_APP}..."
+      echo "Копируем конфигурационные файлы на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
       rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
 
-      # Копируем Docker образ на целевой сервер
+      # Экспортируем и копируем Docker образ на целевой сервер
       echo "Экспортируем Docker образ..."
       docker save kafka-connect-datalake:latest | gzip > kafka-connect-latest.tar.gz
 

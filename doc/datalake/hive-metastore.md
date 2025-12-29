@@ -198,25 +198,12 @@ variables:
   GIT_STRATEGY: clone
 
 stages:
-  - build
   - deploy
-
-Build Hive Metastore Image:
-  stage: build
-  tags: [your_runner_tag]
-  script:
-    - docker build -t hive-metastore:${CI_COMMIT_SHORT_SHA} .
-    - docker tag hive-metastore:${CI_COMMIT_SHORT_SHA} hive-metastore:latest
-    # Опционально: push в registry
-    # - docker tag hive-metastore:latest registry.company.com/hive-metastore:latest
-    # - docker push registry.company.com/hive-metastore:latest
-  only:
-    - main
 
 Deploy Hive Metastore to TEST:
   stage: deploy
   tags: [your_runner_tag]
-  needs: [Build Hive Metastore Image]
+  needs: []
   when: manual
   allow_failure: false
   before_script:
@@ -225,6 +212,11 @@ Deploy Hive Metastore to TEST:
     - MINIO_HOST="minio.company.com"
   script:
     - |
+      # Сборка Docker образа
+      echo "Собираем Docker образ..."
+      docker build -t hive-metastore:${CI_COMMIT_SHORT_SHA} .
+      docker tag hive-metastore:${CI_COMMIT_SHORT_SHA} hive-metastore:latest
+
       # Создаем переменную с названием образа
       ImageName=hive-metastore:latest
 
@@ -283,11 +275,11 @@ Deploy Hive Metastore to TEST:
 
       DEPLOY_SCRIPT
 
-      echo "Копируем конфигурационные файлы и образ на ${SRV_APP}..."
+      echo "Копируем конфигурационные файлы на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
       rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
 
-      # Копируем Docker образ на целевой сервер
+      # Экспортируем и копируем Docker образ на целевой сервер
       echo "Экспортируем Docker образ..."
       docker save hive-metastore:latest | gzip > hive-metastore-latest.tar.gz
 

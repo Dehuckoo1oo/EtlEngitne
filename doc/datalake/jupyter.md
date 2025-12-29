@@ -166,28 +166,23 @@ variables:
   GIT_STRATEGY: clone
 
 stages:
-  - build
   - deploy
-
-Build Jupyter Image:
-  stage: build
-  tags: [your_runner_tag]
-  script:
-    - docker build -t jupyter-datalake:${CI_COMMIT_SHORT_SHA} .
-    - docker tag jupyter-datalake:${CI_COMMIT_SHORT_SHA} jupyter-datalake:latest
-  only:
-    - main
 
 Deploy Jupyter to TEST:
   stage: deploy
   tags: [your_runner_tag]
-  needs: [Build Jupyter Image]
+  needs: []
   when: manual
   allow_failure: false
   before_script:
     - SRV_APP="jupyter.company.com"
   script:
     - |
+      # Сборка Docker образа
+      echo "Собираем Docker образ..."
+      docker build -t jupyter-datalake:${CI_COMMIT_SHORT_SHA} .
+      docker tag jupyter-datalake:${CI_COMMIT_SHORT_SHA} jupyter-datalake:latest
+
       # Создаем переменную с названием образа
       ImageName=jupyter-datalake:latest
 
@@ -236,11 +231,11 @@ Deploy Jupyter to TEST:
 
       DEPLOY_SCRIPT
 
-      echo "Копируем конфигурационные файлы и образ на ${SRV_APP}..."
+      echo "Копируем конфигурационные файлы на ${SRV_APP}..."
       ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
       rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
 
-      # Копируем Docker образ на целевой сервер
+      # Экспортируем и копируем Docker образ на целевой сервер
       echo "Экспортируем Docker образ..."
       docker save jupyter-datalake:latest | gzip > jupyter-latest.tar.gz
 

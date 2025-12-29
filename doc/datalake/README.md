@@ -178,35 +178,58 @@ data-lake/
 
 ### Пример GitLab CI/CD pipeline
 
+**Примечание**: Для Data Lake сервисов используется только стадия `deploy`. Стадия `build` используется только для сборки приложений (например .jar файлов в Java проектах), а не для Docker образов.
+
 ```yaml
-# .gitlab-ci.yml (в корне каждого сервиса)
+# .gitlab-ci.yml (в корне каждого сервиса Data Lake)
 stages:
-  - build
   - deploy
 
 variables:
-  IMAGE_TAG: ${CI_COMMIT_REF_NAME}-${CI_COMMIT_SHORT_SHA}
-  REGISTRY: registry.company.com
+  GIT_STRATEGY: clone
 
-build:
-  stage: build
-  script:
-    - docker build -t ${REGISTRY}/${CI_PROJECT_NAME}:${IMAGE_TAG} .
-    - docker push ${REGISTRY}/${CI_PROJECT_NAME}:${IMAGE_TAG}
-  only:
-    - main
-    - develop
-
-deploy:
+Deploy Service to TEST:
   stage: deploy
-  script:
-    - ssh deploy@${TARGET_HOST} "docker pull ${REGISTRY}/${CI_PROJECT_NAME}:${IMAGE_TAG}"
-    - ssh deploy@${TARGET_HOST} "docker stop ${CI_PROJECT_NAME} || true"
-    - ssh deploy@${TARGET_HOST} "docker rm ${CI_PROJECT_NAME} || true"
-    - ssh deploy@${TARGET_HOST} "docker run -d --name ${CI_PROJECT_NAME} --env-file /opt/${CI_PROJECT_NAME}/.env ${REGISTRY}/${CI_PROJECT_NAME}:${IMAGE_TAG}"
-  only:
-    - main
+  tags: [your_runner_tag]
+  needs: []
   when: manual
+  allow_failure: false
+  before_script:
+    - SRV_APP="service.company.com"  # Целевой сервер
+  script:
+    - |
+      # Создаем переменную с названием образа
+      ImageName=service-name:latest
+
+      # Создаем переменную с названием контейнера
+      ContainerName=service-name
+
+      # Создаем скрипт деплоя
+      echo "set -e" > build.sh
+      cat >> build.sh << DEPLOY_SCRIPT
+
+      echo 'Останавливаем и удаляем старый контейнер...'
+      docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
+
+      echo 'Создаем новый контейнер...'
+      docker run -d --name ${ContainerName} --restart=always ${ImageName}
+
+      echo "=========================================================================================="
+      echo 'ГОТОВО!'
+      echo "=========================================================================================="
+
+      DEPLOY_SCRIPT
+
+      echo "Копируем скрипт и файлы на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "mkdir -p ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
+      rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
+
+      echo "Запускаем скрипт деплоя на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
+        chmod u+x ./build.sh && ./build.sh"
+
+      echo "Удаляем временные файлы с ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
 ```
 
 ---
