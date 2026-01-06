@@ -166,6 +166,9 @@ ENTRYPOINT ["/entrypoint.sh"]
 `.env.example`:
 
 ```bash
+# === Service Type ===
+SERVICE_NAME=metastore
+
 # === MinIO/S3 ===
 AWS_ACCESS_KEY_ID=hive-metastore
 AWS_SECRET_ACCESS_KEY=<PASSWORD_FROM_MINIO>
@@ -309,6 +312,7 @@ Deploy Hive Metastore to TEST:
         -d \
         --name ${ContainerName} \
         --restart=always \
+        -e SERVICE_NAME=metastore \
         -e AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
         -e AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
         -e SERVICE_OPTS="${SERVICE_OPTS}" \
@@ -374,6 +378,49 @@ docker inspect hive-metastore | grep -A 5 Health
 ---
 
 ## Troubleshooting
+
+### Контейнер постоянно перезапускается с "Initialized schema successfully.."
+
+**Симптомы**:
+```
+Initialized schema successfully..
++ '[' '' == hiveserver2 ']'
++ '[' '' == metastore ']'
++ : postgres
++ SKIP_SCHEMA_INIT=false
+...
+Initialized schema successfully..
+```
+
+**Причина**: Не установлена переменная окружения `SERVICE_NAME=metastore`. Entrypoint скрипт инициализирует схему БД, но не запускает сам Metastore сервис. Контейнер завершается, Docker перезапускает его из-за `--restart=always`, и цикл повторяется.
+
+**Решение**:
+1. Добавьте `SERVICE_NAME=metastore` в ваш `.env` файл:
+   ```bash
+   SERVICE_NAME=metastore
+   AWS_ACCESS_KEY_ID=hive-metastore
+   AWS_SECRET_ACCESS_KEY=<PASSWORD>
+   ...
+   ```
+
+2. Пересоздайте контейнер:
+   ```bash
+   docker stop hive-metastore && docker rm hive-metastore
+   docker run -d \
+     --name hive-metastore \
+     --restart unless-stopped \
+     -p 9083:9083 \
+     --env-file .env \
+     hive-metastore:latest
+   ```
+
+3. Проверьте логи - теперь должно быть:
+   ```bash
+   docker logs -f hive-metastore
+   # Ожидается: Starting Hive Metastore Server
+   ```
+
+---
 
 ### Ошибка: "Could not find or load main class Djavax.jdo.option..."
 
