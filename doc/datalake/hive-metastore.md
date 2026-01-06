@@ -170,6 +170,9 @@ ENTRYPOINT ["/entrypoint.sh"]
 AWS_ACCESS_KEY_ID=hive-metastore
 AWS_SECRET_ACCESS_KEY=<PASSWORD_FROM_MINIO>
 
+# === Database ===
+DB_DRIVER=postgres
+
 # === Hive Metastore opts ===
 # ВАЖНО: Значение должно быть в кавычках!
 SERVICE_OPTS="-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres-metastore.company.com:5432/metastore_db -Djavax.jdo.option.ConnectionUserName=hive -Djavax.jdo.option.ConnectionPassword=<SECURE_PASSWORD> -Xms4g -Xmx4g"
