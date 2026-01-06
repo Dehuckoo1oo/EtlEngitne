@@ -5,6 +5,8 @@
 Сервис для выгрузки событий из Kafka в MinIO в формате Parquet через S3 Sink Connector.
 MVP: один worker, без кластера и балансировщиков.
 
+**ВАЖНО**: Конфигурация использует переменные окружения (а не файл `connect-distributed.properties`) для поддержки Avro формата и Schema Registry. Это стандартный подход для Confluent Platform.
+
 ---
 
 ## Требования к машине
@@ -24,14 +26,16 @@ MVP: один worker, без кластера и балансировщиков.
 ```
 kafka-connect/
 ├── Dockerfile
-├── config/
-│   └── connect-distributed.properties
 ├── connectors/
-│   └── s3-sink-order-events.json
-├── .env.example
+│   ├── s3-sink-order-events.json
+│   ├── s3-sink-full-avro.json (пример)
+│   └── s3-sink-json.json (пример)
+├── .env.example (опционально)
 ├── .gitlab-ci.yml
 └── README.md
 ```
+
+**Примечание**: Директория `config/` не требуется, так как все параметры передаются через переменные окружения.
 
 ---
 
@@ -50,8 +54,7 @@ RUN curl -o /tmp/confluentinc-kafka-connect-s3-11.0.8.zip \
     unzip /tmp/confluentinc-kafka-connect-s3-11.0.8.zip -d /usr/share/confluent-hub-components/ && \
     rm /tmp/confluentinc-kafka-connect-s3-11.0.8.zip
 
-# Скопировать конфиги
-COPY config/connect-distributed.properties /etc/kafka/connect-distributed.properties
+# Скопировать конфиги коннекторов (для примеров)
 COPY connectors/ /opt/connectors/
 
 USER appuser
@@ -89,9 +92,11 @@ RUN unzip /tmp/confluentinc-kafka-connect-s3-11.0.8.zip -d /usr/share/confluent-
 
 ## Конфигурационные файлы
 
-### connect-distributed.properties
+**ПРИМЕЧАНИЕ**: Файл `connect-distributed.properties` приведен ниже для справки, но **НЕ используется** в текущей конфигурации. Все параметры передаются через переменные окружения при запуске контейнера (см. раздел "Build & Deploy").
 
-`config/connect-distributed.properties`:
+### connect-distributed.properties (для справки)
+
+`config/connect-distributed.properties` (НЕ ИСПОЛЬЗУЕТСЯ):
 
 ```properties
 # === Подключение к Kafka кластеру ===
@@ -209,8 +214,8 @@ producer.compression.type=snappy
     "s3.path.style.access.enabled": "true",
     "s3.part.size": "67108864",
 
-    "aws.access.key.id": "<S3_ACCESS_KEY>",
-    "aws.secret.access.key": "<S3_SECRET_KEY>",
+    "aws.access.key.id": "${env:AWS_ACCESS_KEY_ID}",
+    "aws.secret.access.key": "${env:AWS_SECRET_ACCESS_KEY}",
 
     "flush.size": "100000",
     "rotate.interval.ms": "600000",
@@ -238,9 +243,11 @@ producer.compression.type=snappy
     "errors.log.enable": "true",
     "errors.log.include.messages": "true",
 
+    "_comment_converters": "Конвертеры для коннектора (переопределяют глобальные настройки)",
     "key.converter": "org.apache.kafka.connect.storage.StringConverter",
     "value.converter": "io.confluent.connect.avro.AvroConverter",
     "value.converter.schema.registry.url": "http://schema-registry.company.com:8081",
+    "value.converter.enhanced.avro.schema.support": "true",
 
     "consumer.override.max.poll.records": "5000",
     "consumer.override.max.partition.fetch.bytes": "20971520",
@@ -270,8 +277,8 @@ producer.compression.type=snappy
 | `store.url` | URL эндпоинта S3-совместимого хранилища (MinIO). Для AWS S3 не указывается |
 | `s3.path.style.access.enabled` | `true` для MinIO (path-style URLs: `http://host/bucket/key`). AWS S3 использует virtual-hosted style |
 | `s3.part.size` | Размер части для multipart upload в байтах (64 MB). Влияет на производительность загрузки больших файлов |
-| `aws.access.key.id` | Access Key для аутентификации в S3/MinIO |
-| `aws.secret.access.key` | Secret Key для аутентификации в S3/MinIO |
+| `aws.access.key.id` | Access Key для аутентификации в S3/MinIO. Используйте `${env:AWS_ACCESS_KEY_ID}` для подстановки из переменных окружения |
+| `aws.secret.access.key` | Secret Key для аутентификации в S3/MinIO. Используйте `${env:AWS_SECRET_ACCESS_KEY}` для подстановки из переменных окружения |
 
 ##### Управление записью файлов (Flush/Rotate)
 
@@ -330,6 +337,7 @@ producer.compression.type=snappy
 | `key.converter` | Конвертер для ключей записей. `StringConverter` - ключи как простые строки |
 | `value.converter` | Конвертер для значений записей. `AvroConverter` - значения в Avro формате со схемой |
 | `value.converter.schema.registry.url` | URL Schema Registry для получения Avro схем значений |
+| `value.converter.enhanced.avro.schema.support` | Включает расширенную поддержку Avro типов данных (Date, Time, Timestamp, Decimal). Рекомендуется `true` |
 
 ##### Настройки производительности consumer'а (переопределение)
 
@@ -351,7 +359,17 @@ producer.compression.type=snappy
 
 ## Environment Variables
 
-`.env.example`:
+**ВАЖНО**: Для работы с Avro и Schema Registry все параметры передаются через переменные окружения при запуске контейнера (см. "Вариант 1: Вручную" ниже).
+
+Основные группы переменных:
+
+1. **Подключение к Kafka**: `CONNECT_BOOTSTRAP_SERVERS`
+2. **Schema Registry (Avro)**: `CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL`, `CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL`
+3. **Внутренние топики**: `CONNECT_CONFIG_STORAGE_TOPIC`, `CONNECT_OFFSET_STORAGE_TOPIC`, `CONNECT_STATUS_STORAGE_TOPIC`
+4. **JVM**: `KAFKA_HEAP_OPTS="-Xms8g -Xmx8g"`
+5. **S3/MinIO**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+
+`.env.example` (опционально, если не используете переменные окружения напрямую):
 
 ```bash
 # === Kafka Connect JVM ===
@@ -374,21 +392,46 @@ cd infrastructure/kafka-connect
 # 2. Build образа
 docker build -t kafka-connect-datalake:latest .
 
-# 3. Создать .env
-cp .env.example .env
-nano .env  # Установить heap при необходимости
-
-# 4. Запуск контейнера
+# 3. Запуск контейнера (все параметры передаются через -e флаги)
 docker run -d \
   --name kafka-connect \
   --restart unless-stopped \
   -p 8083:8083 \
-  --env-file .env \
+  -e CONNECT_BOOTSTRAP_SERVERS="kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092" \
+  -e CONNECT_REST_ADVERTISED_HOST_NAME="kafka-connect.company.com" \
+  -e CONNECT_GROUP_ID="kafka-connect-mvp" \
+  -e CONNECT_CONFIG_STORAGE_TOPIC="_connect-configs" \
+  -e CONNECT_OFFSET_STORAGE_TOPIC="_connect-offsets" \
+  -e CONNECT_STATUS_STORAGE_TOPIC="_connect-status" \
+  -e CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR="3" \
+  -e CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR="3" \
+  -e CONNECT_STATUS_STORAGE_REPLICATION_FACTOR="3" \
+  -e CONNECT_KEY_CONVERTER="io.confluent.connect.avro.AvroConverter" \
+  -e CONNECT_VALUE_CONVERTER="io.confluent.connect.avro.AvroConverter" \
+  -e CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL="http://schema-registry.company.com:8081" \
+  -e CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL="http://schema-registry.company.com:8081" \
+  -e CONNECT_INTERNAL_KEY_CONVERTER="org.apache.kafka.connect.json.JsonConverter" \
+  -e CONNECT_INTERNAL_VALUE_CONVERTER="org.apache.kafka.connect.json.JsonConverter" \
+  -e CONNECT_INTERNAL_KEY_CONVERTER_SCHEMAS_ENABLE="false" \
+  -e CONNECT_INTERNAL_VALUE_CONVERTER_SCHEMAS_ENABLE="false" \
+  -e CONNECT_PLUGIN_PATH="/usr/share/java,/usr/share/confluent-hub-components" \
+  -e KAFKA_HEAP_OPTS="-Xms8g -Xmx8g" \
+  -e AWS_ACCESS_KEY_ID="kafka-connect" \
+  -e AWS_SECRET_ACCESS_KEY="<password_from_minio>" \
   kafka-connect-datalake:latest
 
-# 5. Health check
+# 4. Health check
 curl -f http://kafka-connect.company.com:8083/
+
+# 5. Проверка доступности Schema Registry
+docker exec kafka-connect curl -f http://schema-registry.company.com:8081/subjects
 ```
+
+**Перед запуском замените**:
+- `kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092` - на ваши адреса Kafka брокеров
+- `kafka-connect.company.com` - на ваш hostname
+- `schema-registry.company.com:8081` - на адрес вашего Schema Registry
+- `<password_from_minio>` - на реальный пароль от MinIO
 
 ### Вариант 2: GitLab CI/CD
 
@@ -410,6 +453,7 @@ Deploy Kafka Connect to TEST:
   before_script:
     - SRV_APP="kafka-connect.company.com"
     - KAFKA_BOOTSTRAP="kafka-broker1:9092,kafka-broker2:9092,kafka-broker3:9092"
+    - SCHEMA_REGISTRY_URL="http://schema-registry.company.com:8081"
   script:
     - |
       # Создаем переменную с названием образа
@@ -439,9 +483,19 @@ Deploy Kafka Connect to TEST:
         -e CONNECT_CONFIG_STORAGE_TOPIC="datalake-connect-configs" \
         -e CONNECT_OFFSET_STORAGE_TOPIC="datalake-connect-offsets" \
         -e CONNECT_STATUS_STORAGE_TOPIC="datalake-connect-status" \
-        -e CONNECT_KEY_CONVERTER="org.apache.kafka.connect.storage.StringConverter" \
-        -e CONNECT_VALUE_CONVERTER="org.apache.kafka.connect.json.JsonConverter" \
-        -e CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE="false" \
+        -e CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR="3" \
+        -e CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR="3" \
+        -e CONNECT_STATUS_STORAGE_REPLICATION_FACTOR="3" \
+        -e CONNECT_KEY_CONVERTER="io.confluent.connect.avro.AvroConverter" \
+        -e CONNECT_VALUE_CONVERTER="io.confluent.connect.avro.AvroConverter" \
+        -e CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL="${SCHEMA_REGISTRY_URL}" \
+        -e CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL="${SCHEMA_REGISTRY_URL}" \
+        -e CONNECT_INTERNAL_KEY_CONVERTER="org.apache.kafka.connect.json.JsonConverter" \
+        -e CONNECT_INTERNAL_VALUE_CONVERTER="org.apache.kafka.connect.json.JsonConverter" \
+        -e CONNECT_INTERNAL_KEY_CONVERTER_SCHEMAS_ENABLE="false" \
+        -e CONNECT_INTERNAL_VALUE_CONVERTER_SCHEMAS_ENABLE="false" \
+        -e CONNECT_PLUGIN_PATH="/usr/share/java,/usr/share/confluent-hub-components" \
+        -e KAFKA_HEAP_OPTS="-Xms8g -Xmx8g" \
         -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
         -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
         -p 8083:8083 \
@@ -461,6 +515,9 @@ Deploy Kafka Connect to TEST:
       echo 'Проверяем доступность REST API:'
       sleep 5
       curl -f http://localhost:8083/ || echo 'ВНИМАНИЕ: REST API еще не доступен. Дождитесь полной инициализации.'
+      echo '------------------------------------------------------------------------------------------'
+      echo 'Проверяем доступность Schema Registry из контейнера:'
+      docker exec ${ContainerName} curl -f ${SCHEMA_REGISTRY_URL}/subjects || echo 'ВНИМАНИЕ: Schema Registry недоступен из контейнера.'
       echo '------------------------------------------------------------------------------------------'
 
       DEPLOY_SCRIPT
@@ -517,6 +574,118 @@ curl http://kafka-connect.company.com:8083/connectors/s3-sink-order-events/statu
 ```bash
 curl -f http://kafka-connect.company.com:8083/
 docker inspect kafka-connect | grep -A 5 Health
+```
+
+---
+
+## Примеры конфигураций коннекторов
+
+### Пример 1: String ключи + Avro значения (из документа выше)
+
+Стандартная конфигурация `connectors/s3-sink-order-events.json` - см. выше.
+
+### Пример 2: Avro ключи + Avro значения
+
+Если и ключи, и значения в формате Avro:
+
+`connectors/s3-sink-full-avro.json`:
+
+```json
+{
+  "name": "s3-sink-full-avro",
+  "config": {
+    "connector.class": "io.confluent.connect.s3.S3SinkConnector",
+    "tasks.max": "12",
+    "topics": "your-full-avro-topic",
+
+    "s3.bucket.name": "datalake",
+    "s3.region": "us-east-1",
+    "store.url": "https://minio.company.com:9000",
+    "s3.path.style.access.enabled": "true",
+
+    "aws.access.key.id": "${env:AWS_ACCESS_KEY_ID}",
+    "aws.secret.access.key": "${env:AWS_SECRET_ACCESS_KEY}",
+
+    "flush.size": "100000",
+    "rotate.interval.ms": "600000",
+    "rotate.schedule.interval.ms": "3600000",
+
+    "format.class": "io.confluent.connect.s3.format.parquet.ParquetFormat",
+    "parquet.codec": "snappy",
+
+    "schema.compatibility": "BACKWARD",
+
+    "partitioner.class": "io.confluent.connect.storage.partitioner.TimeBasedPartitioner",
+    "path.format": "'dt='yyyy-MM-dd'/hour='HH",
+    "partition.duration.ms": "3600000",
+    "timezone": "UTC",
+    "timestamp.extractor": "Record",
+
+    "topics.dir": "topics",
+
+    "behavior.on.null.values": "ignore",
+    "errors.tolerance": "none",
+    "errors.log.enable": "true",
+    "errors.log.include.messages": "true",
+
+    "_comment": "Оба конвертера Avro для полной типизации",
+    "key.converter": "io.confluent.connect.avro.AvroConverter",
+    "value.converter": "io.confluent.connect.avro.AvroConverter",
+    "key.converter.schema.registry.url": "http://schema-registry.company.com:8081",
+    "value.converter.schema.registry.url": "http://schema-registry.company.com:8081",
+    "key.converter.enhanced.avro.schema.support": "true",
+    "value.converter.enhanced.avro.schema.support": "true",
+
+    "consumer.override.max.poll.records": "5000",
+    "consumer.override.auto.offset.reset": "earliest"
+  }
+}
+```
+
+### Пример 3: JSON конвертеры (без Schema Registry)
+
+Если данные в Kafka в простом JSON формате без схем:
+
+`connectors/s3-sink-json.json`:
+
+```json
+{
+  "name": "s3-sink-json",
+  "config": {
+    "connector.class": "io.confluent.connect.s3.S3SinkConnector",
+    "tasks.max": "12",
+    "topics": "your-json-topic",
+
+    "s3.bucket.name": "datalake",
+    "s3.region": "us-east-1",
+    "store.url": "https://minio.company.com:9000",
+    "s3.path.style.access.enabled": "true",
+
+    "aws.access.key.id": "${env:AWS_ACCESS_KEY_ID}",
+    "aws.secret.access.key": "${env:AWS_SECRET_ACCESS_KEY}",
+
+    "flush.size": "100000",
+    "rotate.interval.ms": "600000",
+
+    "format.class": "io.confluent.connect.s3.format.json.JsonFormat",
+
+    "partitioner.class": "io.confluent.connect.storage.partitioner.TimeBasedPartitioner",
+    "path.format": "'dt='yyyy-MM-dd'/hour='HH",
+    "partition.duration.ms": "3600000",
+    "timezone": "UTC",
+
+    "topics.dir": "topics",
+
+    "errors.tolerance": "none",
+
+    "_comment": "JSON конвертеры без схем",
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+
+    "consumer.override.auto.offset.reset": "earliest"
+  }
+}
 ```
 
 ---
