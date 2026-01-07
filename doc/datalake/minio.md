@@ -231,10 +231,11 @@ Init MinIO to TEST:
 
       echo 'Запускаем init контейнер...'
       docker run \
+        --rm \
         --network host \
         --entrypoint /bin/sh \
-        -d \
         --name ${ContainerName} \
+        -e BALANSER_NAME=${BALANSER_NAME} \
         -e MINIO_ROOT_USER=${MINIO_ROOT_USER} \
         -e MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD} \
         -e HIVE_METASTORE_USER=${HIVE_METASTORE_USER} \
@@ -275,16 +276,21 @@ Init MinIO to TEST:
 
 В настройках CI/CD вашего проекта GitLab (`Settings > CI/CD > Variables`) добавьте:
 
-| Переменная | Значение | Тип |
-|-----------|----------|-----|
-| `MINIO_ROOT_USER` | `admin_datalake_2024` | Variable |
-| `MINIO_ROOT_PASSWORD` | `<secure_password>` | Variable (Masked) |
-| `HIVE_METASTORE_USER` | `hive-metastore` | Variable |
-| `HIVE_METASTORE_PASSWORD` | `<secure_password>` | Variable (Masked) |
-| `KAFKA_CONNECT_USER` | `kafka-connect` | Variable |
-| `KAFKA_CONNECT_PASSWORD` | `<secure_password>` | Variable (Masked) |
-| `TRINO_USER` | `trino` | Variable |
-| `TRINO_PASSWORD` | `<secure_password>` | Variable (Masked) |
+| Переменная | Значение | Тип | Описание |
+|-----------|----------|-----|----------|
+| `MINIO_ROOT_USER` | `admin_datalake_2024` | Variable | Администратор MinIO |
+| `MINIO_ROOT_PASSWORD` | `<secure_password>` | Variable (Masked) | Пароль администратора |
+| `HIVE_METASTORE_USER` | `hive-metastore` | Variable | Имя пользователя Hive |
+| `HIVE_METASTORE_PASSWORD` | `<secure_password>` | Variable (Masked) | Пароль Hive |
+| `KAFKA_CONNECT_USER` | `kafka-connect` | Variable | Имя пользователя Kafka Connect |
+| `KAFKA_CONNECT_PASSWORD` | `<secure_password>` | Variable (Masked) | Пароль Kafka Connect |
+| `TRINO_USER` | `trino` | Variable | Имя пользователя Trino |
+| `TRINO_PASSWORD` | `<secure_password>` | Variable (Masked) | Пароль Trino |
+
+**Важно**: Init-скрипт создает политики доступа для всех пользователей автоматически:
+- `hive-metastore-policy`: полный доступ (чтение, запись, удаление)
+- `kafka-connect-policy`: доступ на чтение и запись
+- `trino-policy`: доступ только на чтение
 
 **Примечание**:
 - Замените `your_runner_tag` на тег вашего GitLab Runner
@@ -455,11 +461,13 @@ echo "MinIO is ready. Creating bucket and users..."
 echo "Bucket 'datalake' created successfully"
 
 # Создать пользователей
-/usr/bin/mc admin user add myminio hive-metastore ${HIVE_METASTORE_PASSWORD}
-/usr/bin/mc admin user add myminio kafka-connect ${KAFKA_CONNECT_PASSWORD}
-/usr/bin/mc admin user add myminio trino ${TRINO_PASSWORD}
+/usr/bin/mc admin user add myminio ${HIVE_METASTORE_USER} ${HIVE_METASTORE_PASSWORD}
+/usr/bin/mc admin user add myminio ${KAFKA_CONNECT_USER} ${KAFKA_CONNECT_PASSWORD}
+/usr/bin/mc admin user add myminio ${TRINO_USER} ${TRINO_PASSWORD}
 
-# Создать policies
+echo "Users created successfully"
+
+# Создать policy для Hive Metastore
 cat > /tmp/hive-policy.json <<EOF
 {
   "Version": "2012-10-17",
@@ -474,9 +482,45 @@ cat > /tmp/hive-policy.json <<EOF
 EOF
 
 /usr/bin/mc admin policy create myminio hive-metastore-policy /tmp/hive-policy.json
-/usr/bin/mc admin policy attach myminio hive-metastore-policy --user hive-metastore
+/usr/bin/mc admin policy attach myminio hive-metastore-policy --user ${HIVE_METASTORE_USER}
+
+# Создать policy для Kafka Connect
+cat > /tmp/kafka-connect-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::datalake/*", "arn:aws:s3:::datalake"]
+    }
+  ]
+}
+EOF
+
+/usr/bin/mc admin policy create myminio kafka-connect-policy /tmp/kafka-connect-policy.json
+/usr/bin/mc admin policy attach myminio kafka-connect-policy --user ${KAFKA_CONNECT_USER}
+
+# Создать policy для Trino
+cat > /tmp/trino-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::datalake/*", "arn:aws:s3:::datalake"]
+    }
+  ]
+}
+EOF
+
+/usr/bin/mc admin policy create myminio trino-policy /tmp/trino-policy.json
+/usr/bin/mc admin policy attach myminio trino-policy --user ${TRINO_USER}
 
 echo "MinIO initialization completed successfully"
+echo "Created users: ${HIVE_METASTORE_USER}, ${KAFKA_CONNECT_USER}, ${TRINO_USER}"
+echo "All policies attached successfully"
 exit 0
 ```
 
@@ -487,12 +531,17 @@ docker run --rm \
   --network host \
   -e MINIO_ROOT_USER=${MINIO_ROOT_USER} \
   -e MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD} \
+  -e HIVE_METASTORE_USER=hive-metastore \
   -e HIVE_METASTORE_PASSWORD=<SECURE_PASSWORD> \
+  -e KAFKA_CONNECT_USER=kafka-connect \
   -e KAFKA_CONNECT_PASSWORD=<SECURE_PASSWORD> \
+  -e TRINO_USER=trino \
   -e TRINO_PASSWORD=<SECURE_PASSWORD> \
   -v $(pwd)/init-minio.sh:/init-minio.sh \
   minio/mc:latest /bin/sh /init-minio.sh
 ```
+
+**Важно**: Скрипт автоматически создает и назначает политики (policies) для всех трех пользователей. Без назначения политик пользователи не смогут видеть bucket'ы и работать с данными.
 
 ---
 
