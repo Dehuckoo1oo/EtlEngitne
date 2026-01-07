@@ -648,6 +648,218 @@ openssl s_client -connect minio.company.com:9000 -showcerts
 
 ---
 
+## Очистка бакетов и папок
+
+### Способ 1: Через локально установленный mc
+
+```bash
+# Настроить alias (если еще не настроен)
+mc alias set datalake https://minio.company.com:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}
+
+# Полная очистка бакета (удаляет все объекты, но сам бакет остается)
+mc rm --recursive --force datalake/datalake
+
+# Очистка конкретной папки в бакете
+mc rm --recursive --force datalake/datalake/archive/
+
+# Очистка по префиксу (например, все файлы с датой 2024-01-*)
+mc rm --recursive --force datalake/datalake/data/2024-01-*
+
+# Удалить старше определенной даты (требует mc версии >= RELEASE.2023-01-28T20-29-38Z)
+mc rm --recursive --force --older-than 30d datalake/datalake/tmp/
+
+# Удалить только пустые директории не получится - MinIO не хранит пустые папки
+# Папки существуют только пока в них есть объекты
+```
+
+### Способ 2: Через Docker контейнер mc
+
+```bash
+# Создать alias для удобства (добавить в ~/.bashrc)
+alias mcdo='docker run --rm -it --network=host \
+  -e MC_HOST_datalake=https://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio.company.com:9000 \
+  minio/mc:latest'
+
+# Использовать
+mcdo ls datalake/datalake
+mcdo rm --recursive --force datalake/datalake/archive/
+mcdo rm --recursive --force datalake/datalake/data/2024-12-*/
+```
+
+### Способ 3: Одноразовый Docker контейнер (для CI/CD или скриптов)
+
+```bash
+# Полная очистка бакета
+docker run --rm --network host \
+  -e MINIO_ROOT_USER=${MINIO_ROOT_USER} \
+  -e MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD} \
+  minio/mc:latest /bin/sh -c "
+    mc alias set myminio https://minio.company.com:9000 \$MINIO_ROOT_USER \$MINIO_ROOT_PASSWORD && \
+    mc rm --recursive --force myminio/datalake
+  "
+
+# Очистка конкретной папки
+docker run --rm --network host \
+  -e MINIO_ROOT_USER=${MINIO_ROOT_USER} \
+  -e MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD} \
+  minio/mc:latest /bin/sh -c "
+    mc alias set myminio https://minio.company.com:9000 \$MINIO_ROOT_USER \$MINIO_ROOT_PASSWORD && \
+    mc rm --recursive --force myminio/datalake/archive/
+  "
+```
+
+### Способ 4: Скрипт для регулярной очистки
+
+`cleanup-minio.sh`:
+
+```bash
+#!/bin/bash
+set -e
+
+# Настройки
+MINIO_HOST="https://minio.company.com:9000"
+BUCKET="datalake"
+ARCHIVE_RETENTION_DAYS=365
+TMP_RETENTION_DAYS=7
+
+# Функция для выполнения mc команд через Docker
+mc_exec() {
+  docker run --rm --network host \
+    -e MINIO_ROOT_USER="${MINIO_ROOT_USER}" \
+    -e MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD}" \
+    minio/mc:latest /bin/sh -c "
+      mc alias set myminio ${MINIO_HOST} \$MINIO_ROOT_USER \$MINIO_ROOT_PASSWORD && \
+      $1
+    "
+}
+
+echo "=== MinIO Cleanup Started ==="
+echo "Timestamp: $(date)"
+
+# Удалить старые архивные данные (старше 365 дней)
+echo "Cleaning archive data older than ${ARCHIVE_RETENTION_DAYS} days..."
+mc_exec "mc rm --recursive --force --older-than ${ARCHIVE_RETENTION_DAYS}d myminio/${BUCKET}/archive/" || true
+
+# Удалить временные файлы (старше 7 дней)
+echo "Cleaning tmp data older than ${TMP_RETENTION_DAYS} days..."
+mc_exec "mc rm --recursive --force --older-than ${TMP_RETENTION_DAYS}d myminio/${BUCKET}/tmp/" || true
+
+# Статистика по использованию
+echo "Current bucket usage:"
+mc_exec "mc du myminio/${BUCKET}"
+
+echo "=== MinIO Cleanup Completed ==="
+```
+
+Использование:
+
+```bash
+chmod +x cleanup-minio.sh
+
+# Запустить вручную
+export MINIO_ROOT_USER=admin_datalake_2024
+export MINIO_ROOT_PASSWORD=<PASSWORD>
+./cleanup-minio.sh
+
+# Добавить в cron для регулярной очистки (каждую ночь в 2:00)
+# crontab -e
+# 0 2 * * * /path/to/cleanup-minio.sh >> /var/log/minio-cleanup.log 2>&1
+```
+
+### Способ 5: GitLab CI/CD Job для очистки
+
+Добавить в `.gitlab-ci.yml`:
+
+```yaml
+Cleanup MinIO Archive:
+  stage: deploy
+  tags: [your_runner_tag]
+  needs: []
+  when: manual
+  allow_failure: false
+  before_script:
+    - MINIO_HOST="https://minio.company.com:9000"
+    - BUCKET="datalake"
+  script:
+    - |
+      echo "=== MinIO Cleanup Started ==="
+
+      # Удалить данные старше 365 дней из archive/
+      docker run --rm --network host \
+        -e MINIO_ROOT_USER=${MINIO_ROOT_USER} \
+        -e MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD} \
+        minio/mc:latest /bin/sh -c "
+          mc alias set myminio ${MINIO_HOST} \$MINIO_ROOT_USER \$MINIO_ROOT_PASSWORD && \
+          echo 'Removing archive data older than 365 days...' && \
+          mc rm --recursive --force --older-than 365d myminio/${BUCKET}/archive/ || true && \
+          echo 'Current bucket usage:' && \
+          mc du myminio/${BUCKET}
+        "
+
+      echo "=== MinIO Cleanup Completed ==="
+
+Cleanup MinIO Folder:
+  stage: deploy
+  tags: [your_runner_tag]
+  needs: []
+  when: manual
+  allow_failure: false
+  variables:
+    FOLDER_PATH: ""  # Будет запрошен при запуске job
+  before_script:
+    - MINIO_HOST="https://minio.company.com:9000"
+    - BUCKET="datalake"
+  script:
+    - |
+      if [ -z "${FOLDER_PATH}" ]; then
+        echo "ERROR: FOLDER_PATH variable is required"
+        exit 1
+      fi
+
+      echo "=== Cleaning folder: ${FOLDER_PATH} ==="
+
+      docker run --rm --network host \
+        -e MINIO_ROOT_USER=${MINIO_ROOT_USER} \
+        -e MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD} \
+        minio/mc:latest /bin/sh -c "
+          mc alias set myminio ${MINIO_HOST} \$MINIO_ROOT_USER \$MINIO_ROOT_PASSWORD && \
+          echo 'Folder contents before cleanup:' && \
+          mc ls --recursive myminio/${BUCKET}/${FOLDER_PATH} || true && \
+          echo 'Removing folder contents...' && \
+          mc rm --recursive --force myminio/${BUCKET}/${FOLDER_PATH} && \
+          echo 'Cleanup completed successfully'
+        "
+```
+
+**Использование в GitLab**:
+- Job `Cleanup MinIO Archive` - автоматически очистит старые данные из archive/
+- Job `Cleanup MinIO Folder` - при запуске нужно указать переменную `FOLDER_PATH` (например, `tmp/` или `data/2024-01-01/`)
+
+### Важные примечания
+
+1. **Безопасность**: Всегда делайте резервную копию перед массовой очисткой
+2. **Производительность**: Удаление большого количества объектов может занять время
+3. **Версионирование**: Если включено версионирование бакета, используйте `--versions` для удаления всех версий:
+   ```bash
+   mc rm --recursive --force --versions datalake/datalake/archive/
+   ```
+4. **Права доступа**: Убедитесь что у пользователя есть права `s3:DeleteObject` для папки/бакета
+5. **Пустые папки**: В S3/MinIO не существует понятия "пустая папка" - папки автоматически исчезают когда удаляются все объекты внутри
+
+### Проверка перед удалением
+
+```bash
+# Посмотреть что будет удалено (сухой прогон)
+mc ls --recursive datalake/datalake/archive/ | wc -l  # количество объектов
+mc du datalake/datalake/archive/  # размер
+
+# Посмотреть детальный список файлов
+mc ls --recursive datalake/datalake/archive/ > files-to-delete.txt
+less files-to-delete.txt
+```
+
+---
+
 ## Следующий шаг
 
 После успешного развертывания MinIO переходите к:
