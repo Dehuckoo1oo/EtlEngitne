@@ -384,7 +384,12 @@ docker build -t trino-datalake:latest .
 cp .env.example .env
 nano .env  # Установить S3 credentials
 
-# 4. Запуск контейнера
+# 4. Создать директорию для данных с правильными правами
+sudo mkdir -p /mnt/data/trino
+sudo chown -R 1000:1000 /mnt/data/trino
+sudo chmod -R 755 /mnt/data/trino
+
+# 5. Запуск контейнера
 docker run -d \
   --name trino \
   --restart unless-stopped \
@@ -395,13 +400,13 @@ docker run -d \
   -v /mnt/data/trino:/data/trino \
   trino-datalake:latest
 
-# 5. Проверить логи
+# 6. Проверить логи
 docker logs -f trino
 
 # Дождаться сообщения:
 # "======== SERVER STARTED ========"
 
-# 6. Health check
+# 7. Health check
 curl -f http://trino.company.com:8080/v1/info
 ```
 
@@ -457,8 +462,10 @@ Deploy Trino to TEST:
       echo 'Останавливаем и удаляем старый контейнер...'
       docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
 
-      echo 'Создаем директории для данных...'
-      mkdir -p /mnt/data/trino
+      echo 'Создаем директории для данных с правильными правами...'
+      sudo mkdir -p /mnt/data/trino
+      sudo chown -R 1000:1000 /mnt/data/trino
+      sudo chmod -R 755 /mnt/data/trino
 
       echo 'Создаем новый контейнер...'
       docker run \
@@ -515,6 +522,29 @@ Deploy Trino to TEST:
 - Замените `svc_user` на пользователя для SSH подключения
 - Скрипт автоматически проверяет доступность Hive Metastore перед деплоем
 - Docker образ собирается локально на целевом сервере из скопированного проекта
+
+**Настройка sudo для svc_user** (на сервере trino.company.com):
+
+Пользователь `svc_user` должен иметь права на выполнение команд без пароля. Добавьте в `/etc/sudoers.d/svc_user`:
+
+```bash
+# На сервере trino.company.com (под root или sudo)
+sudo visudo -f /etc/sudoers.d/svc_user
+
+# Добавить:
+svc_user ALL=(ALL) NOPASSWD: /bin/mkdir, /bin/chown, /bin/chmod, /usr/bin/docker
+```
+
+Или альтернативный вариант - создайте директорию `/mnt/data/trino` вручную один раз с правильными правами:
+
+```bash
+# На сервере trino.company.com (выполнить один раз)
+sudo mkdir -p /mnt/data/trino
+sudo chown -R 1000:1000 /mnt/data/trino
+sudo chmod -R 755 /mnt/data/trino
+```
+
+После этого CI/CD скрипт будет использовать уже существующую директорию с правильными правами
 
 ---
 
@@ -600,6 +630,45 @@ docker inspect trino | grep -A 5 Health
 ---
 
 ## Troubleshooting
+
+### Permission denied: '/data/trino/var'
+
+**Проблема**: При запуске контейнера в логах появляется:
+```
+ERROR: [Errno 13] Permission denied: '/data/trino/var'
+```
+
+**Причина**: Директория `/mnt/data/trino` на хосте принадлежит root, а Trino внутри контейнера работает от пользователя `trino` (UID 1000).
+
+**Решение**:
+```bash
+# Остановить контейнер
+docker stop trino && docker rm trino
+
+# Установить правильные права
+sudo chown -R 1000:1000 /mnt/data/trino
+sudo chmod -R 755 /mnt/data/trino
+
+# Запустить контейнер снова
+docker run -d \
+  --name trino \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  --env-file .env \
+  -e "s3.aws-access-key=${S3_ACCESS_KEY}" \
+  -e "s3.aws-secret-key=${S3_SECRET_KEY}" \
+  -v /mnt/data/trino:/data/trino \
+  trino-datalake:latest
+
+# Проверить логи
+docker logs -f trino
+```
+
+**Проверка UID пользователя trino** (если 1000 не работает):
+```bash
+docker run --rm trino-datalake:latest id trino
+# Использовать полученные UID:GID в команде chown
+```
 
 ### Trino не стартует
 
