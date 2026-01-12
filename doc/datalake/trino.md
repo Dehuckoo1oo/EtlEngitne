@@ -10,6 +10,8 @@
 
 ## Требования к машине
 
+### Целевая конфигурация (для работы с 2+ TB данных)
+
 | Параметр | Значение |
 |----------|----------|
 | CPU | 16 cores |
@@ -17,6 +19,23 @@
 | Storage | 500 GB SSD (для spill disk) |
 | Network | 10 Gbit/s |
 | Hostname | trino.company.com |
+
+### Минимальная конфигурация (ограниченные ресурсы)
+
+| Параметр | Значение |
+|----------|----------|
+| CPU | 16 cores |
+| RAM | 64 GB |
+| Storage | **64 GB** (минимум) |
+| Network | 10 Gbit/s |
+| Hostname | trino.company.com |
+
+⚠️ **Ограничения минимальной конфигурации**:
+- Нельзя обрабатывать очень большие JOIN (нет места для spill)
+- Запросы должны быть оптимизированы (использовать партиционирование, фильтры)
+- Рекомендуется работа с датасетами до 500GB-1TB
+
+📋 **См. раздел**: [Конфигурация для ограниченных ресурсов](#конфигурация-для-ограниченных-ресурсов-64gb-ram--64gb-disk)
 
 ---
 
@@ -73,7 +92,7 @@ CMD ["/usr/lib/trino/bin/run-trino"]
 
 ---
 
-## Конфигурационные файлы
+## Конфигурационные файлы (целевая конфигурация)
 
 ### config.properties
 
@@ -189,6 +208,148 @@ s3.path-style-access=true
 ```
 
 **Важно**: S3 credentials нужно передать через environment variables в `.env` файле.
+
+---
+
+## Конфигурация для ограниченных ресурсов (64GB RAM / 64GB Disk)
+
+Если у вас доступно только 64GB диска вместо 500GB, используйте следующие адаптированные конфигурации.
+
+### config.properties (ограниченные ресурсы)
+
+`config/config.properties`:
+
+```properties
+# === COORDINATOR (Single-node включает coordinator и worker) ===
+coordinator=true
+node-scheduler.include-coordinator=true
+
+# === HTTP SERVER ===
+http-server.http.port=8080
+
+# === DISCOVERY ===
+discovery.uri=http://localhost:8080
+
+# === MEMORY (адаптировано под ограниченные ресурсы) ===
+query.max-memory=24GB
+query.max-memory-per-node=24GB
+query.max-total-memory=32GB
+
+# === SPILL TO DISK (ОТКЛЮЧЕН - недостаточно места) ===
+# Для 64GB диска spill отключаем, чтобы избежать нехватки места
+spill-enabled=false
+# spiller-spill-path=/data/trino/spill
+# spiller-max-used-space-threshold=0.8
+
+# === PERFORMANCE (снижено для стабильности) ===
+query.max-stage-count=100
+query.max-execution-time=1h
+task.concurrency=12
+
+# === FAILSAFE (автоматическая остановка больших запросов) ===
+query.max-scan-physical-bytes=500GB
+```
+
+⚠️ **Важно**:
+- Spill to disk **отключен** из-за нехватки места
+- Большие JOIN запросы могут падать с OOM
+- Используйте фильтры по партициям для ограничения объема данных
+
+### jvm.config (ограниченные ресурсы)
+
+`config/jvm.config`:
+
+```
+-server
+-Xmx40G
+-Xms40G
+-XX:+UseG1GC
+-XX:G1HeapRegionSize=32M
+-XX:+ExplicitGCInvokesConcurrent
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=/data/trino/heap_dump.hprof
+-XX:+ExitOnOutOfMemoryError
+-XX:ReservedCodeCacheSize=512M
+-XX:PerformanceDataSamplingInterval=1000
+-Djdk.attach.allowAttachSelf=true
+-Djdk.nio.maxCachedBufferSize=2000000
+```
+
+**Изменения**:
+- Heap снижен с 48GB до **40GB** (оставляем больше места для ОС и кэшей)
+
+### node.properties (без изменений)
+
+`config/node.properties`:
+
+```properties
+node.environment=production
+node.id=trino-mvp-1
+node.data-dir=/data/trino
+```
+
+### log.properties (без изменений)
+
+`config/log.properties`:
+
+```properties
+io.trino=INFO
+```
+
+### Catalogs (без изменений)
+
+Используйте те же `catalog/iceberg.properties` и `catalog/hive.properties` из основной конфигурации.
+
+### Рекомендации по работе с ограниченными ресурсами
+
+1. **Всегда используйте партиционирование**:
+   ```sql
+   -- ХОРОШО: фильтр по партиции
+   SELECT * FROM iceberg.sales.orders
+   WHERE dt BETWEEN '2024-12-01' AND '2024-12-31'
+
+   -- ПЛОХО: полное сканирование таблицы
+   SELECT * FROM iceberg.sales.orders
+   ```
+
+2. **Ограничивайте JOIN размеры**:
+   ```sql
+   -- Используйте WHERE перед JOIN
+   SELECT a.*, b.name
+   FROM large_table a
+   JOIN small_table b ON a.id = b.id
+   WHERE a.dt = '2024-12-25'  -- фильтр ПЕРЕД JOIN
+   ```
+
+3. **Используйте LIMIT для тестирования**:
+   ```sql
+   SELECT * FROM large_table LIMIT 1000
+   ```
+
+4. **Мониторинг памяти**:
+   ```bash
+   # Проверять использование RAM
+   docker stats trino
+
+   # Проверять использование диска
+   docker exec trino df -h /data/trino
+   ```
+
+5. **Если нужен spill** - подключите внешний volume:
+   ```bash
+   # Пример: подключить внешний диск
+   docker run -d \
+     --name trino \
+     -v /mnt/large-disk:/data/trino/spill \
+     ...
+   ```
+
+   И включите в config.properties:
+   ```properties
+   spill-enabled=true
+   spiller-spill-path=/data/trino/spill
+   spiller-max-used-space-threshold=0.8
+   ```
 
 ---
 
