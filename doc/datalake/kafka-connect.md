@@ -690,6 +690,293 @@ docker inspect kafka-connect | grep -A 5 Health
 
 ---
 
+## Партиционирование по полям из топика
+
+### Общие сведения
+
+По умолчанию в примерах выше используется **временное партиционирование** (`TimeBasedPartitioner`), которое создает папки на основе даты и времени записи в Kafka.
+
+Однако часто требуется **партиционирование по полям из сообщений** (например, по `region`, `user_id`, `product_category` и т.д.). Для этого используется `FieldPartitioner`.
+
+### Различия между партиционерами
+
+| Партиционер | Описание | Пример пути |
+|------------|----------|-------------|
+| `TimeBasedPartitioner` | Партиционирует по timestamp записи в Kafka | `topics/order-events/dt=2026-01-12/hour=14/` |
+| `FieldPartitioner` | Партиционирует по значению поля из сообщения | `topics/order-events/region=EU/status=completed/` |
+| `DailyPartitioner` | Партиционирует по дням (упрощенный вариант TimeBasedPartitioner) | `topics/order-events/year=2026/month=01/day=12/` |
+| `HourlyPartitioner` | Партиционирует по часам | `topics/order-events/year=2026/month=01/day=12/hour=14/` |
+| `DefaultPartitioner` | Без партиционирования, все файлы в одной директории | `topics/order-events/` |
+
+### Пример 4: Партиционирование по одному полю
+
+Партиционирование по полю `region` из сообщения:
+
+`connectors/s3-sink-field-partition-single.json`:
+
+```json
+{
+  "name": "s3-sink-field-partition-single",
+  "config": {
+    "connector.class": "io.confluent.connect.s3.S3SinkConnector",
+    "tasks.max": "12",
+    "topics": "order-events",
+
+    "s3.bucket.name": "datalake",
+    "s3.region": "us-east-1",
+    "store.url": "https://minio.company.com:9000",
+    "s3.path.style.access.enabled": "true",
+
+    "aws.access.key.id": "${env:AWS_ACCESS_KEY_ID}",
+    "aws.secret.access.key": "${env:AWS_SECRET_ACCESS_KEY}",
+
+    "flush.size": "100000",
+    "rotate.interval.ms": "600000",
+
+    "format.class": "io.confluent.connect.s3.format.parquet.ParquetFormat",
+    "parquet.codec": "snappy",
+
+    "schema.compatibility": "BACKWARD",
+
+    "_comment_partitioner": "Партиционирование по полю region из сообщения",
+    "partitioner.class": "io.confluent.connect.storage.partitioner.FieldPartitioner",
+    "partition.field.name": "region",
+
+    "topics.dir": "topics",
+    "directory.delim": "/",
+
+    "behavior.on.null.values": "ignore",
+    "errors.tolerance": "none",
+    "errors.log.enable": "true",
+    "errors.log.include.messages": "true",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "io.confluent.connect.avro.AvroConverter",
+    "value.converter.schema.registry.url": "http://schema-registry.company.com:8081",
+    "value.converter.enhanced.avro.schema.support": "true",
+
+    "consumer.override.max.poll.records": "5000",
+    "consumer.override.auto.offset.reset": "earliest"
+  }
+}
+```
+
+**Результат**: Файлы будут размещаться в папках типа:
+```
+s3://datalake/topics/order-events/region=EU/
+s3://datalake/topics/order-events/region=US/
+s3://datalake/topics/order-events/region=APAC/
+```
+
+### Пример 5: Партиционирование по нескольким полям
+
+Партиционирование по полям `region` и `status`:
+
+`connectors/s3-sink-field-partition-multi.json`:
+
+```json
+{
+  "name": "s3-sink-field-partition-multi",
+  "config": {
+    "connector.class": "io.confluent.connect.s3.S3SinkConnector",
+    "tasks.max": "12",
+    "topics": "order-events",
+
+    "s3.bucket.name": "datalake",
+    "s3.region": "us-east-1",
+    "store.url": "https://minio.company.com:9000",
+    "s3.path.style.access.enabled": "true",
+
+    "aws.access.key.id": "${env:AWS_ACCESS_KEY_ID}",
+    "aws.secret.access.key": "${env:AWS_SECRET_ACCESS_KEY}",
+
+    "flush.size": "100000",
+    "rotate.interval.ms": "600000",
+
+    "format.class": "io.confluent.connect.s3.format.parquet.ParquetFormat",
+    "parquet.codec": "snappy",
+
+    "schema.compatibility": "BACKWARD",
+
+    "_comment_partitioner": "Партиционирование по полям region и status",
+    "partitioner.class": "io.confluent.connect.storage.partitioner.FieldPartitioner",
+    "partition.field.name": "region,status",
+
+    "topics.dir": "topics",
+    "directory.delim": "/",
+
+    "behavior.on.null.values": "ignore",
+    "errors.tolerance": "none",
+    "errors.log.enable": "true",
+    "errors.log.include.messages": "true",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "io.confluent.connect.avro.AvroConverter",
+    "value.converter.schema.registry.url": "http://schema-registry.company.com:8081",
+    "value.converter.enhanced.avro.schema.support": "true",
+
+    "consumer.override.max.poll.records": "5000",
+    "consumer.override.auto.offset.reset": "earliest"
+  }
+}
+```
+
+**Результат**: Файлы будут размещаться в иерархии папок:
+```
+s3://datalake/topics/order-events/region=EU/status=completed/
+s3://datalake/topics/order-events/region=EU/status=pending/
+s3://datalake/topics/order-events/region=US/status=completed/
+s3://datalake/topics/order-events/region=US/status=cancelled/
+```
+
+### Пример 6: Комбинированное партиционирование (поле + время)
+
+Если нужно сочетать партиционирование по полю и по времени, используйте **два подхода**:
+
+#### Вариант А: Поле + DailyPartitioner
+
+К сожалению, S3 Sink Connector не поддерживает одновременное использование `FieldPartitioner` и `TimeBasedPartitioner` напрямую. Но можно использовать **вложенные партиционеры**:
+
+`connectors/s3-sink-field-and-time.json`:
+
+```json
+{
+  "name": "s3-sink-field-and-time",
+  "config": {
+    "connector.class": "io.confluent.connect.s3.S3SinkConnector",
+    "tasks.max": "12",
+    "topics": "order-events",
+
+    "s3.bucket.name": "datalake",
+    "s3.region": "us-east-1",
+    "store.url": "https://minio.company.com:9000",
+    "s3.path.style.access.enabled": "true",
+
+    "aws.access.key.id": "${env:AWS_ACCESS_KEY_ID}",
+    "aws.secret.access.key": "${env:AWS_SECRET_ACCESS_KEY}",
+
+    "flush.size": "100000",
+    "rotate.interval.ms": "600000",
+
+    "format.class": "io.confluent.connect.s3.format.parquet.ParquetFormat",
+    "parquet.codec": "snappy",
+
+    "schema.compatibility": "BACKWARD",
+
+    "_comment_partitioner": "Партиционирование сначала по region, затем по дням",
+    "partitioner.class": "io.confluent.connect.storage.partitioner.DailyPartitioner",
+    "partition.field.name": "region",
+    "locale": "en-US",
+    "timezone": "UTC",
+
+    "topics.dir": "topics",
+    "directory.delim": "/",
+
+    "behavior.on.null.values": "ignore",
+    "errors.tolerance": "none",
+    "errors.log.enable": "true",
+    "errors.log.include.messages": "true",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "io.confluent.connect.avro.AvroConverter",
+    "value.converter.schema.registry.url": "http://schema-registry.company.com:8081",
+    "value.converter.enhanced.avro.schema.support": "true",
+
+    "consumer.override.max.poll.records": "5000",
+    "consumer.override.auto.offset.reset": "earliest"
+  }
+}
+```
+
+**Результат**:
+```
+s3://datalake/topics/order-events/region=EU/year=2026/month=01/day=12/
+s3://datalake/topics/order-events/region=US/year=2026/month=01/day=12/
+```
+
+#### Вариант Б: Использование timestamp поля из сообщения
+
+Если в вашем сообщении есть поле с timestamp (например, `event_date`), можно партиционировать по нему:
+
+```json
+{
+  "partitioner.class": "io.confluent.connect.storage.partitioner.TimeBasedPartitioner",
+  "path.format": "'region='region'/dt='yyyy-MM-dd",
+  "partition.duration.ms": "86400000",
+  "timestamp.extractor": "RecordField",
+  "timestamp.field": "event_date",
+  "timezone": "UTC"
+}
+```
+
+**Важно**: `timestamp.field` указывает на поле в сообщении, которое содержит timestamp (должен быть тип `long` в миллисекундах или ISO 8601 string).
+
+### Параметры для FieldPartitioner
+
+| Параметр | Описание | Пример |
+|----------|----------|--------|
+| `partitioner.class` | Класс партиционера | `io.confluent.connect.storage.partitioner.FieldPartitioner` |
+| `partition.field.name` | Имя поля (или список полей через запятую) для партиционирования | `region` или `region,status,product_type` |
+
+### Важные замечания
+
+1. **Схема Avro обязательна**: Поля для партиционирования должны быть определены в Avro схеме сообщения.
+
+2. **Поддерживаемые типы полей**:
+   - String
+   - Int/Long
+   - Enum
+   - Boolean
+
+3. **Поля с null значениями**:
+   - Если поле партиционирования содержит `null`, файл будет помещен в папку `field=null`
+   - Используйте `behavior.on.null.values=ignore` для пропуска таких записей
+
+4. **Производительность**:
+   - Большое количество уникальных значений поля создаст много партиций
+   - Каждая партиция = отдельная директория
+   - Рекомендуется использовать поля с умеренной кардинальностью (10-1000 значений)
+
+5. **Структура пути**:
+   - Порядок полей в `partition.field.name` определяет иерархию папок
+   - `region,status` → `region=EU/status=completed/`
+   - `status,region` → `status=completed/region=EU/`
+
+### Пример структуры сообщения в Kafka (Avro)
+
+Для партиционирования по полям ваше сообщение должно выглядеть так:
+
+```json
+{
+  "order_id": "12345",
+  "region": "EU",
+  "status": "completed",
+  "user_id": 67890,
+  "amount": 150.00,
+  "event_date": 1704988800000
+}
+```
+
+Avro схема:
+
+```json
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "namespace": "com.company.events",
+  "fields": [
+    {"name": "order_id", "type": "string"},
+    {"name": "region", "type": "string"},
+    {"name": "status", "type": "string"},
+    {"name": "user_id", "type": "long"},
+    {"name": "amount", "type": "double"},
+    {"name": "event_date", "type": "long"}
+  ]
+}
+```
+
+---
+
 ## Следующий шаг
 
 После успешного запуска Kafka Connect переходите к:
