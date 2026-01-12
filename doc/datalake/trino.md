@@ -140,7 +140,6 @@ task.concurrency=16
 -XX:HeapDumpPath=/data/trino/heap_dump.hprof
 -XX:+ExitOnOutOfMemoryError
 -XX:ReservedCodeCacheSize=512M
--XX:PerformanceDataSamplingInterval=1000
 -Djdk.attach.allowAttachSelf=true
 -Djdk.nio.maxCachedBufferSize=2000000
 ```
@@ -270,7 +269,6 @@ query.max-scan-physical-bytes=500GB
 -XX:HeapDumpPath=/data/trino/heap_dump.hprof
 -XX:+ExitOnOutOfMemoryError
 -XX:ReservedCodeCacheSize=512M
--XX:PerformanceDataSamplingInterval=1000
 -Djdk.attach.allowAttachSelf=true
 -Djdk.nio.maxCachedBufferSize=2000000
 ```
