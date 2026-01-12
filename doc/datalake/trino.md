@@ -606,6 +606,442 @@ SELECT * FROM iceberg.test.sample_table;
 
 ---
 
+## Работа с данными в S3/MinIO
+
+Этот раздел показывает, как создавать таблицы из существующих Parquet файлов в S3/MinIO и работать с партиционированными данными.
+
+### Основные концепции
+
+1. **External таблицы** - указывают на существующие данные в S3, не копируют их
+2. **Партиционирование** - данные организованы в поддиректории типа `srcId=2025122201`
+3. **Синхронизация партиций** - Trino нужно явно сообщить о новых партициях
+4. **Фильтрация по партициям** - критично для производительности
+
+### Создание схемы
+
+```sql
+-- Создать схему с указанием базового пути в S3
+CREATE SCHEMA IF NOT EXISTS hive.datalake
+WITH (location = 's3a://datalake/');
+
+-- Или без явного location (будет использован дефолтный путь)
+CREATE SCHEMA IF NOT EXISTS hive.aigt;
+```
+
+---
+
+### Пример 1: Таблица с тремя уровнями партиционирования
+
+**Структура данных в S3:**
+```
+s3a://datalake/topics/order-events/
+├── calc_id=2025122201/
+│   ├── dt=2025-12-22/
+│   │   ├── hour=00/
+│   │   │   └── data.parquet
+│   │   ├── hour=01/
+│   │   │   └── data.parquet
+│   │   └── ...
+│   └── dt=2025-12-23/
+│       └── ...
+└── calc_id=2025122301/
+    └── ...
+```
+
+**SQL скрипт для создания таблицы:**
+
+```sql
+-- 1. Создать схему
+CREATE SCHEMA IF NOT EXISTS hive.datalake
+WITH (location = 's3a://datalake/');
+
+-- 2. Удалить таблицу (если нужно пересоздать)
+DROP TABLE IF EXISTS hive.datalake.order_events;
+
+-- 3. Создать external таблицу
+CREATE TABLE hive.datalake.order_events (
+    order_id VARCHAR,
+    customer_id VARCHAR,
+    order_date VARCHAR,
+    delivery_date DATE,
+    status VARCHAR,
+    total_amount DOUBLE,
+    currency VARCHAR,
+    item_count INTEGER,
+    shipping_address VARCHAR,
+    billing_address VARCHAR,
+    shipping_zip VARCHAR,
+    billing_zip VARCHAR,
+    shipping_city VARCHAR,
+    billing_city VARCHAR,
+    shipping_country VARCHAR,
+    billing_country VARCHAR,
+    payment_method VARCHAR,
+    card_last_digits VARCHAR,
+    card_expiry VARCHAR,
+    ip_address VARCHAR,
+    user_agent VARCHAR,
+    campaign_id VARCHAR,
+    referrer_url VARCHAR,
+    device_type VARCHAR,
+    browser VARCHAR,
+    os VARCHAR,
+    coupon_code VARCHAR,
+    discount_amount DOUBLE,
+    loyalty_points_used INTEGER,
+    gift_wrap BOOLEAN,
+    special_instructions VARCHAR,
+    calc_id VARCHAR,      -- ПАРТИЦИЯ 1
+    dt VARCHAR,           -- ПАРТИЦИЯ 2
+    hour VARCHAR          -- ПАРТИЦИЯ 3
+) WITH (
+    external_location = 's3a://datalake/topics/order-events',
+    format = 'PARQUET',
+    partitioned_by = ARRAY['calc_id', 'dt', 'hour']
+);
+
+-- 4. Синхронизировать все партиции (FULL = первый раз, найти все)
+CALL hive.system.sync_partition_metadata('datalake', 'order_events', 'FULL');
+
+-- 5. Проверить количество записей
+SELECT COUNT(*) FROM hive.datalake.order_events;
+
+-- 6. Проверить распределение по партициям
+SELECT calc_id, dt, hour, COUNT(*) as row_count
+FROM hive.datalake.order_events
+GROUP BY calc_id, dt, hour
+ORDER BY calc_id, dt, hour;
+
+-- 7. Посмотреть метаданные партиций
+SELECT * FROM hive.datalake."order_events$partitions";
+
+-- 8. Посмотреть пути к файлам
+SELECT
+    "$path" as file_path,
+    COUNT(*) as row_count
+FROM hive.datalake.order_events
+GROUP BY "$path"
+ORDER BY "$path"
+LIMIT 20;
+
+-- 9. Запрос с фильтрацией (ВСЕГДА используйте фильтр по партициям!)
+SELECT *
+FROM hive.datalake.order_events
+WHERE calc_id = '2025122201'  -- Обязательный фильтр
+  AND dt = '2025-12-22'       -- Обязательный фильтр
+  AND order_id = 'ORD-7460';
+```
+
+---
+
+### Пример 2: Таблица с одной партицией (srcId)
+
+**Структура данных в S3:**
+```
+s3a://datalake/topics/orderPlacementResult/
+├── srcId=2025122201/
+│   └── *.parquet
+├── srcId=2025122301/
+│   └── *.parquet
+└── srcId=2025122401/
+    └── *.parquet
+```
+
+**SQL скрипт для создания таблицы:**
+
+```sql
+-- 1. Создать схему
+CREATE SCHEMA IF NOT EXISTS hive.aigt;
+
+-- 2. Удалить таблицу (если существует)
+DROP TABLE IF EXISTS hive.aigt.tOrderForecastCalcResultTemp;
+
+-- 3. Создать external таблицу
+CREATE TABLE hive.aigt.tOrderForecastCalcResultTemp (
+    rsltId SMALLINT,
+    skuId INT,
+    spId INT,
+    cntrId INT,
+    orderDt DATE,
+    incomeDt DATE,
+    calcAttribute SMALLINT,
+    totalOrderPcs DECIMAL(10, 3),
+    orderPcs DECIMAL(10, 3),
+    baseSaleForecastPcs DECIMAL(10, 5),
+    mcSaleForecastMpoPcs DECIMAL(10, 5),
+    mcSaleForecastCoeffPcs DECIMAL(10, 5),
+    spPerc DECIMAL(10, 3),
+    avgSalePcs DECIMAL(10, 3),
+    writeoutOrderPcs DECIMAL(10, 3),
+    frcstRestPcs DECIMAL(10, 3),
+    expectedArrivalPcs DECIMAL(10, 3),
+    tslWriteoffPcs DECIMAL(10, 3),
+    salePlanPcs DECIMAL(10, 3),
+    frcstMcStockPcs DECIMAL(10, 3),
+    mcStockPcs DECIMAL(10, 3),
+    isMcStockRecalc BOOLEAN,          -- bit -> boolean
+    positiveHolidayGrowthPcs DECIMAL(10, 3),
+    negativeHolidayGrowthPcs DECIMAL(10, 3),
+    positiveMcGrowthPcs DECIMAL(10, 3),
+    positiveMcGrpGrowthPcs DECIMAL(10, 3),
+    stockPcs DECIMAL(10, 3),
+    stockDays DECIMAL(10, 3),
+    minStockPcs DECIMAL(10, 3),
+    defStockPcs DECIMAL(10, 3),
+    calcStockPcs DECIMAL(10, 3),
+    totalStockPcs DECIMAL(10, 3),
+    orderCoef DECIMAL(10, 3),
+    holidayStockPcs DECIMAL(10, 3),
+    seasonStockPcs DECIMAL(10, 3),
+    addStockPcs DECIMAL(10, 3),
+    frcstRestDayPcs DECIMAL(10, 3),
+    overallSalePcs DECIMAL(10, 3),
+    arithmeticSalePcs DECIMAL(10, 3),
+    deviationPcs DECIMAL(10, 3),
+    discretDays INT,
+    resShelfLifeDays INT,
+    firstOrderPcs DECIMAL(10, 3),
+    currentRestPcs DECIMAL(10, 3),
+    minPartPcs DECIMAL(10, 3),
+    isStockDayVolatility BOOLEAN,     -- bit -> boolean
+    isStockPcsPss BOOLEAN,            -- bit -> boolean
+    analogSkuIdList VARCHAR,          -- varchar(8000) -> varchar
+    mainNeedPcs DECIMAL(10, 3),
+    totalOrderOperationPcs DECIMAL(10, 3),
+    limTotalStockCoef DECIMAL(10, 3),
+    roundOrderCoef DECIMAL(10, 3),
+    isRestoredSale BOOLEAN,           -- bit -> boolean
+    correctWdcPcs DECIMAL(10, 3),
+    sumWdcForecastRestPcs DECIMAL(10, 3),
+    isRecalcOrderSale BOOLEAN,        -- bit -> boolean
+    trustPercList INT,
+    conceptPromoLogId BIGINT,
+    prtNum TINYINT,
+    srcId INT                         -- ПАРТИЦИЯ
+) WITH (
+    format = 'PARQUET',
+    partitioned_by = ARRAY['srcId'],
+    external_location = 's3a://datalake/topics/orderPlacementResult/'
+);
+
+-- 4. Синхронизировать партиции
+CALL hive.system.sync_partition_metadata('aigt', 'tOrderForecastCalcResultTemp', 'FULL');
+
+-- 5. Проверить партиции
+SELECT * FROM hive.aigt."tOrderForecastCalcResultTemp$partitions";
+
+-- 6. Посмотреть доступные srcId
+SELECT DISTINCT srcId
+FROM hive.aigt."tOrderForecastCalcResultTemp$partitions"
+ORDER BY srcId DESC;
+
+-- 7. Запрос за конкретный день (ОБЯЗАТЕЛЬНО указывайте srcId!)
+SELECT
+    skuId,
+    spId,
+    cntrId,
+    SUM(totalOrderPcs) as total_order,
+    AVG(stockDays) as avg_stock_days
+FROM hive.aigt.tOrderForecastCalcResultTemp
+WHERE srcId = 2025122201  -- ⚠️ ОБЯЗАТЕЛЬНО! Иначе сканируются все дни
+  AND orderDt >= DATE '2025-12-01'
+GROUP BY skuId, spId, cntrId
+ORDER BY total_order DESC
+LIMIT 100;
+
+-- 8. Запрос за последние 7 дней
+SELECT
+    srcId,
+    COUNT(*) as record_count,
+    SUM(totalOrderPcs) as total_orders
+FROM hive.aigt.tOrderForecastCalcResultTemp
+WHERE srcId >= 2025121601 AND srcId <= 2025122201  -- Фильтр по партициям
+GROUP BY srcId
+ORDER BY srcId DESC;
+```
+
+---
+
+### Работа с партициями: Best Practices
+
+#### 1. Ежедневная синхронизация новых партиций
+
+После загрузки новых данных в S3 каждый день:
+
+```sql
+-- Вариант 1: Автоматически добавить новые партиции (рекомендуется)
+CALL hive.system.sync_partition_metadata('aigt', 'tOrderForecastCalcResultTemp', 'ADD');
+
+-- Вариант 2: Добавить конкретную партицию вручную
+ALTER TABLE hive.aigt.tOrderForecastCalcResultTemp
+ADD IF NOT EXISTS PARTITION (srcId = 2025122301);
+
+-- Вариант 3: Полная пересинхронизация (медленно, для исправления проблем)
+CALL hive.system.sync_partition_metadata('aigt', 'tOrderForecastCalcResultTemp', 'FULL');
+```
+
+**Автоматизация через cron:**
+
+```bash
+# /etc/cron.d/trino-sync-partitions
+# Запускать каждый день в 06:00 (после загрузки данных в 05:00)
+0 6 * * * trino_user /usr/local/bin/trino --server http://trino.company.com:8080 --execute "CALL hive.system.sync_partition_metadata('aigt', 'tOrderForecastCalcResultTemp', 'ADD');"
+```
+
+#### 2. ВСЕГДА используйте фильтр по партициям
+
+```sql
+-- ✅ ПРАВИЛЬНО: фильтр по партиции
+SELECT * FROM hive.aigt.tOrderForecastCalcResultTemp
+WHERE srcId = 2025122201;
+
+-- ✅ ПРАВИЛЬНО: диапазон партиций
+SELECT * FROM hive.aigt.tOrderForecastCalcResultTemp
+WHERE srcId >= 2025122001 AND srcId <= 2025122201;
+
+-- ❌ ПЛОХО: без фильтра = сканирует ВСЕ партиции (очень медленно!)
+SELECT * FROM hive.aigt.tOrderForecastCalcResultTemp;
+
+-- ❌ ПЛОХО: фильтр по не-партиционной колонке
+SELECT * FROM hive.aigt.tOrderForecastCalcResultTemp
+WHERE orderDt = DATE '2025-12-22';  -- srcId тоже нужен!
+```
+
+#### 3. Проверка партиций
+
+```sql
+-- Посмотреть все доступные партиции
+SELECT * FROM hive.aigt."tOrderForecastCalcResultTemp$partitions"
+ORDER BY srcId DESC;
+
+-- Подсчитать записи в каждой партиции
+SELECT srcId, COUNT(*) as row_count
+FROM hive.aigt.tOrderForecastCalcResultTemp
+GROUP BY srcId
+ORDER BY srcId DESC;
+
+-- Проверить размер партиций на диске
+SELECT
+    srcId,
+    COUNT(DISTINCT "$path") as file_count,
+    COUNT(*) as row_count
+FROM hive.aigt.tOrderForecastCalcResultTemp
+GROUP BY srcId
+ORDER BY srcId DESC;
+```
+
+#### 4. Удаление старых партиций
+
+```sql
+-- Удалить партицию из метаданных Trino
+ALTER TABLE hive.aigt.tOrderForecastCalcResultTemp
+DROP IF EXISTS PARTITION (srcId = 2025112201);
+
+-- ⚠️ ВНИМАНИЕ: это НЕ удаляет файлы из S3!
+-- Файлы нужно удалить через MinIO Console или AWS CLI:
+-- aws s3 rm s3://datalake/topics/orderPlacementResult/srcId=2025112201/ --recursive
+```
+
+#### 5. Исправление проблем с партициями
+
+```sql
+-- Если партиции не видны - полная пересинхронизация
+CALL hive.system.sync_partition_metadata('aigt', 'tOrderForecastCalcResultTemp', 'FULL');
+
+-- Проверить Hive Metastore напрямую
+SHOW PARTITIONS hive.aigt.tOrderForecastCalcResultTemp;
+
+-- Проверить количество партиций в метаданных vs фактически
+SELECT COUNT(*) as metadata_partition_count
+FROM hive.aigt."tOrderForecastCalcResultTemp$partitions";
+```
+
+---
+
+### Полезные запросы для анализа
+
+```sql
+-- 1. Посмотреть структуру таблицы
+DESCRIBE hive.aigt.tOrderForecastCalcResultTemp;
+
+-- 2. Посмотреть пути к Parquet файлам
+SELECT DISTINCT "$path"
+FROM hive.aigt.tOrderForecastCalcResultTemp
+WHERE srcId = 2025122201
+LIMIT 10;
+
+-- 3. Проверить, что данные читаются корректно
+SELECT
+    srcId,
+    COUNT(*) as total_rows,
+    COUNT(DISTINCT skuId) as unique_skus,
+    MIN(orderDt) as min_date,
+    MAX(orderDt) as max_date,
+    SUM(totalOrderPcs) as total_orders
+FROM hive.aigt.tOrderForecastCalcResultTemp
+WHERE srcId = 2025122201
+GROUP BY srcId;
+
+-- 4. Найти конкретную запись
+SELECT *
+FROM hive.aigt.tOrderForecastCalcResultTemp
+WHERE srcId = 2025122201
+  AND skuId = 123456
+  AND spId = 789
+LIMIT 10;
+
+-- 5. Сравнить данные за разные дни
+SELECT
+    srcId,
+    skuId,
+    SUM(totalOrderPcs) as total_orders
+FROM hive.aigt.tOrderForecastCalcResultTemp
+WHERE srcId IN (2025122101, 2025122201)
+GROUP BY srcId, skuId
+ORDER BY skuId, srcId;
+
+-- 6. Посмотреть статистику по файлам
+SELECT
+    "$path" as file_path,
+    COUNT(*) as row_count,
+    SUM(totalOrderPcs) as total_orders
+FROM hive.aigt.tOrderForecastCalcResultTemp
+WHERE srcId = 2025122201
+GROUP BY "$path"
+ORDER BY row_count DESC
+LIMIT 20;
+```
+
+---
+
+### Важные замечания
+
+1. **Типы данных:**
+   - SQL Server `bit` → Trino `BOOLEAN`
+   - SQL Server `varchar(N)` → Trino `VARCHAR` (без указания длины)
+   - SQL Server `decimal(p,s)` → Trino `DECIMAL(p,s)` (одинаково)
+
+2. **Партиции добавляются ВРУЧНУЮ:**
+   - Trino не обнаруживает новые партиции автоматически
+   - После загрузки данных в S3 нужно вызвать `sync_partition_metadata`
+
+3. **Производительность:**
+   - Без фильтра по партициям запрос сканирует ВСЕ данные
+   - Для таблиц с сотнями партиций это = десятки TB данных
+   - Всегда указывайте `WHERE srcId = ...`
+
+4. **Структура партиций в S3:**
+   - Формат: `key=value` (например, `srcId=2025122201`)
+   - Это называется "Hive partitioning"
+   - Trino автоматически распознает такую структуру
+
+5. **Ежедневная работа:**
+   - Данные загружаются в S3: `srcId=2025122301`
+   - Добавляем партицию: `CALL sync_partition_metadata(..., 'ADD')`
+   - Запрашиваем данные: `WHERE srcId = 2025122301`
+
+---
+
 ## Health Check
 
 ```bash
