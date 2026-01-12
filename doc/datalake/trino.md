@@ -181,6 +181,9 @@ s3.endpoint=https://minio.company.com:9000
 s3.region=us-east-1
 s3.path-style-access=true
 
+# === SSL (для самоподписанных сертификатов) ===
+s3.ssl.enabled=false
+
 # Credentials будут переданы через environment variables
 # s3.aws-access-key=${ENV:S3_ACCESS_KEY}
 # s3.aws-secret-key=${ENV:S3_SECRET_KEY}
@@ -202,6 +205,9 @@ fs.native-s3.enabled=true
 s3.endpoint=https://minio.company.com:9000
 s3.region=us-east-1
 s3.path-style-access=true
+
+# === SSL (для самоподписанных сертификатов) ===
+s3.ssl.enabled=false
 
 # Credentials через environment variables
 ```
@@ -592,7 +598,7 @@ CREATE TABLE iceberg.test.sample_table (
   created_date DATE
 ) WITH (
   format = 'PARQUET',
-  location = 's3a://datalake/test/sample_table/'
+  location = 's3://datalake/test/sample_table/'
 );
 
 -- Вставить тестовые данные
@@ -610,6 +616,17 @@ SELECT * FROM iceberg.test.sample_table;
 
 Этот раздел показывает, как создавать таблицы из существующих Parquet файлов в S3/MinIO и работать с партиционированными данными.
 
+**⚠️ ВАЖНО: Выбор протокола S3**
+
+В зависимости от конфигурации `fs.native-s3.enabled` используйте соответствующий протокол:
+
+| Конфигурация | Протокол | Пример |
+|-------------|----------|--------|
+| `fs.native-s3.enabled=true` | **`s3://`** | `s3://datalake/topics/data/` |
+| `fs.native-s3.enabled=false` | **`s3a://`** | `s3a://datalake/topics/data/` |
+
+В этой инструкции используется **`s3://`** (нативный S3 клиент), так как `fs.native-s3.enabled=true`.
+
 ### Основные концепции
 
 1. **External таблицы** - указывают на существующие данные в S3, не копируют их
@@ -622,7 +639,7 @@ SELECT * FROM iceberg.test.sample_table;
 ```sql
 -- Создать схему с указанием базового пути в S3
 CREATE SCHEMA IF NOT EXISTS hive.datalake
-WITH (location = 's3a://datalake/');
+WITH (location = 's3://datalake/');
 
 -- Или без явного location (будет использован дефолтный путь)
 CREATE SCHEMA IF NOT EXISTS hive.aigt;
@@ -634,7 +651,7 @@ CREATE SCHEMA IF NOT EXISTS hive.aigt;
 
 **Структура данных в S3:**
 ```
-s3a://datalake/topics/order-events/
+s3://datalake/topics/order-events/
 ├── calc_id=2025122201/
 │   ├── dt=2025-12-22/
 │   │   ├── hour=00/
@@ -653,7 +670,7 @@ s3a://datalake/topics/order-events/
 ```sql
 -- 1. Создать схему
 CREATE SCHEMA IF NOT EXISTS hive.datalake
-WITH (location = 's3a://datalake/');
+WITH (location = 's3://datalake/');
 
 -- 2. Удалить таблицу (если нужно пересоздать)
 DROP TABLE IF EXISTS hive.datalake.order_events;
@@ -695,7 +712,7 @@ CREATE TABLE hive.datalake.order_events (
     dt VARCHAR,           -- ПАРТИЦИЯ 2
     hour VARCHAR          -- ПАРТИЦИЯ 3
 ) WITH (
-    external_location = 's3a://datalake/topics/order-events',
+    external_location = 's3://datalake/topics/order-events',
     format = 'PARQUET',
     partitioned_by = ARRAY['calc_id', 'dt', 'hour']
 );
@@ -738,7 +755,7 @@ WHERE calc_id = '2025122201'  -- Обязательный фильтр
 
 **Структура данных в S3:**
 ```
-s3a://datalake/topics/orderPlacementResult/
+s3://datalake/topics/orderPlacementResult/
 ├── srcId=2025122201/
 │   └── *.parquet
 ├── srcId=2025122301/
@@ -821,7 +838,7 @@ CREATE TABLE hive.aigt.tOrderForecastCalcResultTemp (
 ) WITH (
     format = 'PARQUET',
     partitioned_by = ARRAY['srcId'],
-    external_location = 's3a://datalake/topics/orderPlacementResult/'
+    external_location = 's3://datalake/topics/orderPlacementResult/'
 );
 
 -- 4. Синхронизировать партиции
@@ -1145,6 +1162,65 @@ docker exec trino curl -I https://minio.company.com:9000
 
 # Тест S3 через Trino CLI
 trino> SELECT * FROM system.runtime.nodes;
+```
+
+### SSL Certificate Error при создании таблиц
+
+**Проблема**: При создании external таблицы с `external_location = 's3://...'` появляется ошибка:
+```
+External location is not a valid file system URI: s3://datalake/topics/...
+Caused by: PKIX path building failed: unable to find valid certification path to requested target
+```
+
+**Причина**: MinIO использует самоподписанный SSL сертификат, который не доверен JVM внутри контейнера Trino.
+
+**Решение 1: Отключить проверку SSL (рекомендуется для внутренних сетей)**
+
+Добавьте в `config/catalog/hive.properties` и `config/catalog/iceberg.properties`:
+
+```properties
+# === SSL (для самоподписанных сертификатов) ===
+s3.ssl.enabled=false
+```
+
+**Решение 2: Использовать HTTP вместо HTTPS**
+
+Измените endpoint в обоих catalog файлах:
+
+```properties
+# Было:
+s3.endpoint=https://minio.company.com:9000
+
+# Стало:
+s3.endpoint=http://minio.company.com:9000
+```
+
+**Решение 3: Добавить сертификат MinIO в truststore (для production)**
+
+```bash
+# Экспортировать сертификат MinIO
+openssl s_client -connect minio.company.com:9000 -showcerts < /dev/null 2>/dev/null | \
+  openssl x509 -outform PEM > minio-cert.pem
+
+# Добавить в Dockerfile:
+COPY minio-cert.pem /tmp/minio-cert.pem
+RUN keytool -import -trustcacerts -alias minio-cert \
+    -file /tmp/minio-cert.pem \
+    -keystore $JAVA_HOME/lib/security/cacerts \
+    -storepass changeit -noprompt
+```
+
+**После изменений**:
+```bash
+# Пересобрать образ
+docker build -t trino-datalake:latest .
+
+# Перезапустить контейнер
+docker stop trino && docker rm trino
+docker run -d --name trino ... trino-datalake:latest
+
+# Проверить логи
+docker logs -f trino
 ```
 
 ### Query fails с OOM
