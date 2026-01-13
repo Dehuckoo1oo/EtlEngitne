@@ -192,6 +192,7 @@ iceberg.file-format=PARQUET
 iceberg.compression-codec=SNAPPY
 
 # === S3/MinIO CONFIGURATION ===
+# Нативный S3 клиент (опционально, можно использовать s3a:// без этого параметра)
 fs.native-s3.enabled=true
 s3.endpoint=https://minio.company.com:9000
 s3.region=us-east-1
@@ -218,6 +219,7 @@ hive.metastore.uri=thrift://hive-metastore.company.com:9083
 hive.non-managed-table-writes-enabled=true
 
 # === S3/MinIO ===
+# Нативный S3 клиент (опционально, можно использовать s3a:// без этого параметра)
 fs.native-s3.enabled=true
 s3.endpoint=https://minio.company.com:9000
 s3.region=us-east-1
@@ -570,6 +572,331 @@ sudo chmod -R 755 /mnt/data/trino
 
 ---
 
+## End-to-End тестирование интеграции
+
+Этот раздел показывает полный цикл работы с данными: запись через Trino → хранение в MinIO → чтение через Trino и Jupyter.
+
+### Шаг 1: Создание тестовой таблицы и запись данных через Trino
+
+Подключитесь к Trino через CLI:
+
+```bash
+trino --server http://trino.company.com:8080 --catalog iceberg --schema default
+```
+
+Выполните следующие SQL команды:
+
+```sql
+-- 1. Создать тестовую схему
+-- ВАЖНО: Используйте s3:// если fs.native-s3.enabled=true
+--        Используйте s3a:// если fs.native-s3.enabled=false или не указан
+CREATE SCHEMA IF NOT EXISTS iceberg.e2e_test
+WITH (location = 's3://datalake/e2e_test/');
+-- Если s3:// не работает, замените на: WITH (location = 's3a://datalake/e2e_test/');
+
+-- 2. Создать простую таблицу
+CREATE TABLE iceberg.e2e_test.simple_test (
+  id BIGINT,
+  name VARCHAR,
+  test_date DATE,
+  test_timestamp TIMESTAMP
+) WITH (
+  format = 'PARQUET',
+  location = 's3://datalake/e2e_test/simple_test/'
+);
+-- Если s3:// не работает, замените на: location = 's3a://datalake/e2e_test/simple_test/'
+
+-- 3. Вставить одну тестовую строку
+INSERT INTO iceberg.e2e_test.simple_test VALUES (
+  1,
+  'Test Record',
+  DATE '2025-01-13',
+  TIMESTAMP '2025-01-13 12:00:00'
+);
+
+-- 4. Прочитать данные обратно
+SELECT * FROM iceberg.e2e_test.simple_test;
+
+-- Должно вернуть:
+-- id | name        | test_date  | test_timestamp
+-- ---|-------------|------------|-------------------
+-- 1  | Test Record | 2025-01-13 | 2025-01-13 12:00:00
+
+-- 5. Проверить метаданные таблицы
+SELECT * FROM iceberg.e2e_test."simple_test$files";
+
+-- 6. Посмотреть путь к файлу
+SELECT DISTINCT "$path"
+FROM iceberg.e2e_test.simple_test;
+```
+
+**Ожидаемый результат**:
+- Таблица создана
+- Одна строка успешно вставлена
+- Данные читаются корректно
+- В выводе `$path` виден путь к Parquet файлу в S3
+
+### Шаг 2: Проверка данных в MinIO Console
+
+1. Откройте MinIO Console: `https://minio.company.com:9000` (или ваш адрес)
+2. Войдите с учетными данными администратора
+3. Перейдите в бакет `datalake`
+4. Найдите директорию `e2e_test/simple_test/data/`
+5. Внутри должны быть поддиректории с метаданными Iceberg и Parquet файлы
+
+**Структура в MinIO:**
+```
+datalake/
+└── e2e_test/
+    └── simple_test/
+        ├── metadata/
+        │   ├── v1.metadata.json
+        │   ├── snap-*.avro
+        │   └── ...
+        └── data/
+            └── *.parquet  ← Ваши данные здесь
+```
+
+**Что проверить:**
+- Файлы `.parquet` существуют
+- Размер файлов больше 0 байт
+- Timestamp создания файлов соответствует времени INSERT
+
+### Шаг 3: Чтение данных через Jupyter
+
+Откройте Jupyter: `http://jupyter.company.com:8888`
+
+Создайте новый notebook и выполните:
+
+#### Вариант 1: Через Trino (рекомендуется)
+
+```python
+from trino.dbapi import connect
+import pandas as pd
+
+# Подключение к Trino
+conn = connect(
+    host='trino.company.com',
+    port=8080,
+    user='analyst',
+    catalog='iceberg',
+    schema='e2e_test'
+)
+
+# Прочитать тестовую таблицу
+query = "SELECT * FROM iceberg.e2e_test.simple_test"
+df = pd.read_sql(query, conn)
+
+print("=== Данные из Trino ===")
+print(df)
+print(f"\nВсего строк: {len(df)}")
+print(f"\nТипы данных:\n{df.dtypes}")
+
+# Проверить результат
+assert len(df) == 1, "Должна быть одна строка"
+assert df.iloc[0]['id'] == 1, "ID должен быть 1"
+assert df.iloc[0]['name'] == 'Test Record', "Name должен быть 'Test Record'"
+
+print("\n✅ Тест пройден успешно!")
+```
+
+#### Вариант 2: Напрямую из MinIO (Parquet файлы)
+
+```python
+import s3fs
+import pandas as pd
+import pyarrow.parquet as pq
+
+# Подключение к MinIO
+s3 = s3fs.S3FileSystem(
+    key='jupyter',  # Ваш S3 access key
+    secret='<PASSWORD>',  # Ваш S3 secret key
+    client_kwargs={
+        'endpoint_url': 'https://minio.company.com:9000',
+        'region_name': 'us-east-1'
+    }
+)
+
+# Найти все Parquet файлы в директории data/
+parquet_files = s3.glob('s3://datalake/e2e_test/simple_test/data/*.parquet')
+
+print(f"Найдено {len(parquet_files)} Parquet файлов:")
+for file in parquet_files:
+    print(f"  - {file}")
+
+# Прочитать первый файл
+if parquet_files:
+    first_file = f"s3://{parquet_files[0]}"
+    df = pd.read_parquet(first_file, filesystem=s3)
+
+    print("\n=== Данные из MinIO (прямое чтение Parquet) ===")
+    print(df)
+    print(f"\nВсего строк: {len(df)}")
+    print(f"\nТипы данных:\n{df.dtypes}")
+
+    # Проверить результат
+    assert len(df) == 1, "Должна быть одна строка"
+    assert df.iloc[0]['id'] == 1, "ID должен быть 1"
+
+    print("\n✅ Тест пройден успешно!")
+else:
+    print("❌ Parquet файлы не найдены!")
+```
+
+#### Вариант 3: Проверка всей структуры Iceberg таблицы
+
+```python
+import s3fs
+import json
+
+# Подключение к MinIO
+s3 = s3fs.S3FileSystem(
+    key='jupyter',
+    secret='<PASSWORD>',
+    client_kwargs={
+        'endpoint_url': 'https://minio.company.com:9000',
+        'region_name': 'us-east-1'
+    }
+)
+
+# Прочитать метаданные Iceberg
+metadata_files = s3.glob('s3://datalake/e2e_test/simple_test/metadata/v*.metadata.json')
+metadata_files.sort()
+
+if metadata_files:
+    latest_metadata = f"s3://{metadata_files[-1]}"
+
+    with s3.open(latest_metadata, 'r') as f:
+        metadata = json.load(f)
+
+    print("=== Метаданные Iceberg таблицы ===")
+    print(f"Format version: {metadata['format-version']}")
+    print(f"Location: {metadata['location']}")
+    print(f"Current snapshot ID: {metadata.get('current-snapshot-id', 'N/A')}")
+    print(f"\nСхема таблицы:")
+    for field in metadata['schema']['fields']:
+        print(f"  - {field['name']}: {field['type']}")
+
+    print("\n✅ Метаданные прочитаны успешно!")
+else:
+    print("❌ Metadata файлы не найдены!")
+```
+
+### Шаг 4: Проверка и очистка
+
+После успешного тестирования можно удалить тестовые данные:
+
+```sql
+-- В Trino CLI
+DROP TABLE IF EXISTS iceberg.e2e_test.simple_test;
+DROP SCHEMA IF EXISTS iceberg.e2e_test;
+```
+
+**⚠️ Важно**: Удаление таблицы через Trino удалит только метаданные. Файлы в MinIO могут остаться. Для полной очистки:
+
+```bash
+# Через MinIO Client (mc)
+mc rm --recursive --force datalake/e2e_test/
+
+# Или через AWS CLI
+aws --endpoint-url https://minio.company.com:9000 \
+    s3 rm s3://datalake/e2e_test/ --recursive
+```
+
+### Troubleshooting E2E теста
+
+**Проблема**: `s3://` не работает, ошибка "unsupported file system" или "External location is not a valid file system URI"
+
+**Причина**: Нативный S3 клиент не включен в конфигурации Trino.
+
+**Решение**: Используйте протокол `s3a://` вместо `s3://`:
+
+```sql
+-- Вместо s3://
+CREATE SCHEMA IF NOT EXISTS iceberg.e2e_test
+WITH (location = 's3a://datalake/e2e_test/');
+
+CREATE TABLE iceberg.e2e_test.simple_test (...)
+WITH (
+  format = 'PARQUET',
+  location = 's3a://datalake/e2e_test/simple_test/'
+);
+```
+
+Это **нормально** и не является проблемой. `s3a://` - стабильный протокол, используемый в production.
+
+**Если хотите включить нативный `s3://`:**
+
+1. Проверьте конфигурацию:
+```bash
+docker exec trino cat /etc/trino/catalog/iceberg.properties
+docker exec trino cat /etc/trino/catalog/hive.properties
+```
+
+2. Добавьте в оба файла (если отсутствует):
+```properties
+fs.native-s3.enabled=true
+```
+
+3. Пересоберите образ и перезапустите:
+```bash
+docker build -t trino-datalake:latest .
+docker restart trino
+```
+
+---
+
+**Проблема**: `INSERT` не выполняется, ошибка SSL certificate
+
+**Решение**: Убедитесь, что корневой сертификат MinIO добавлен в Java truststore (см. раздел [SSL Certificate Error при создании таблиц](#ssl-certificate-error-при-создании-таблиц))
+
+---
+
+**Проблема**: Данные вставлены, но не видны в MinIO Console
+
+**Решение**:
+```sql
+-- Проверить путь к данным
+SELECT * FROM iceberg.e2e_test."simple_test$files";
+
+-- Проверить что location корректный
+SHOW CREATE TABLE iceberg.e2e_test.simple_test;
+```
+
+---
+
+**Проблема**: Jupyter не может прочитать из MinIO (SSL error)
+
+**Решение**: Убедитесь, что корневой сертификат MinIO установлен в Jupyter контейнере (см. [jupyter.md - SSL Certificate Error](jupyter.md#ssl-certificate-error))
+
+---
+
+**Проблема**: В MinIO есть файлы, но Jupyter их не видит
+
+**Решение**: Проверьте S3 credentials и endpoint:
+```python
+import boto3
+
+s3_client = boto3.client(
+    's3',
+    endpoint_url='https://minio.company.com:9000',
+    aws_access_key_id='jupyter',
+    aws_secret_access_key='<PASSWORD>',
+    region_name='us-east-1'
+)
+
+# Проверить доступ к бакету
+try:
+    response = s3_client.list_objects_v2(Bucket='datalake', Prefix='e2e_test/')
+    print("Объекты в бакете:")
+    for obj in response.get('Contents', []):
+        print(f"  - {obj['Key']}")
+except Exception as e:
+    print(f"Ошибка: {e}")
+```
+
+---
+
 ## Проверка работоспособности
 
 ### 1. Web UI
@@ -638,12 +965,24 @@ SELECT * FROM iceberg.test.sample_table;
 
 В зависимости от конфигурации `fs.native-s3.enabled` используйте соответствующий протокол:
 
-| Конфигурация | Протокол | Пример |
-|-------------|----------|--------|
-| `fs.native-s3.enabled=true` | **`s3://`** | `s3://datalake/topics/data/` |
-| `fs.native-s3.enabled=false` | **`s3a://`** | `s3a://datalake/topics/data/` |
+| Конфигурация | Протокол | Пример | Производительность | Совместимость |
+|-------------|----------|--------|-------------------|---------------|
+| `fs.native-s3.enabled=true` | **`s3://`** | `s3://datalake/topics/data/` | Быстрее на 5-10% | Trino 380+ |
+| `fs.native-s3.enabled=false` или не указан | **`s3a://`** | `s3a://datalake/topics/data/` | Стабильный | Все версии |
 
-В этой инструкции используется **`s3://`** (нативный S3 клиент), так как `fs.native-s3.enabled=true`.
+**Как проверить, какой протокол работает у вас:**
+
+```bash
+# На сервере Trino
+docker exec trino cat /etc/trino/catalog/iceberg.properties | grep native-s3
+
+# Если выводит: fs.native-s3.enabled=true → используйте s3://
+# Если ничего не выводит или false → используйте s3a://
+```
+
+**Рекомендация:** Если `s3a://` работает у вас, оставьте его - это надежный вариант. Разница в производительности минимальна для большинства use cases.
+
+В этой инструкции используется **`s3://`** (нативный S3 клиент) в примерах по умолчанию, но вы можете заменить на `s3a://` везде, где упоминается `s3://`.
 
 ### Основные концепции
 
