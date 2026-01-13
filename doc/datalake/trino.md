@@ -76,7 +76,7 @@ USER root
 COPY config/minio-root-ca.crt /tmp/minio-root-ca.crt
 
 # Добавляем сертификат в Java truststore
-RUN JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java)))) && \
+RUN JAVA_HOME=$(dirname $(dirname $(readlink -f $(command -v java)))) && \
     keytool -import -trustcacerts -noprompt \
       -alias minio-root-ca \
       -file /tmp/minio-root-ca.crt \
