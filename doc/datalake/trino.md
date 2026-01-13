@@ -215,8 +215,15 @@ s3.path-style-access=true
 connector.name=hive
 hive.metastore.uri=thrift://hive-metastore.company.com:9083
 
-# === PERMISSIONS ===
-hive.non-managed-table-writes-enabled=true
+# === PERMISSIONS (полный набор для владельца таблиц) ===
+hive.non-managed-table-writes-enabled=true   # Запись в external таблицы (обязательно!)
+hive.allow-drop-table=true                   # DROP TABLE
+hive.allow-rename-table=true                 # RENAME TABLE / ALTER TABLE RENAME
+hive.allow-add-column=true                   # ALTER TABLE ADD COLUMN
+hive.allow-drop-column=true                  # ALTER TABLE DROP COLUMN
+hive.allow-rename-column=true                # ALTER TABLE RENAME COLUMN
+hive.allow-comment-table=true                # COMMENT ON TABLE
+hive.allow-comment-column=true               # COMMENT ON COLUMN
 
 # === S3/MinIO ===
 # Нативный S3 клиент (опционально, можно использовать s3a:// без этого параметра)
@@ -233,6 +240,26 @@ s3.path-style-access=true
 ```
 
 **Важно**: S3 credentials нужно передать через environment variables в `.env` файле.
+
+**Описание параметров разрешений**:
+
+| Параметр | Операции | Обязательность |
+|----------|----------|----------------|
+| `hive.non-managed-table-writes-enabled` | INSERT, UPDATE, DELETE в external таблицы | **Обязательно** для external таблиц |
+| `hive.allow-drop-table` | DROP TABLE | Нужен для удаления таблиц |
+| `hive.allow-rename-table` | ALTER TABLE ... RENAME TO ... | Нужен для переименования таблиц |
+| `hive.allow-add-column` | ALTER TABLE ADD COLUMN | Нужен для добавления колонок |
+| `hive.allow-drop-column` | ALTER TABLE DROP COLUMN | Нужен для удаления колонок |
+| `hive.allow-rename-column` | ALTER TABLE RENAME COLUMN | Нужен для переименования колонок |
+| `hive.allow-comment-table` | COMMENT ON TABLE | Опционально для комментариев |
+| `hive.allow-comment-column` | COMMENT ON COLUMN | Опционально для комментариев |
+
+**Работа с партициями**:
+- `ALTER TABLE ... ADD PARTITION` - разрешается через `hive.non-managed-table-writes-enabled=true`
+- `ALTER TABLE ... DROP PARTITION` - разрешается через `hive.allow-drop-table=true`
+- `CALL hive.system.sync_partition_metadata()` - разрешается через `hive.non-managed-table-writes-enabled=true`
+
+**⚠️ Важно**: Эти параметры разрешают операции на уровне **connector**, но не управляют правами **пользователей**. Все пользователи получат эти разрешения. Для разграничения прав между пользователями см. раздел [Access Control (управление доступом)](#access-control-управление-доступом).
 
 ---
 
@@ -1416,6 +1443,206 @@ LIMIT 20;
 
 ---
 
+## Access Control (управление доступом)
+
+Параметры в `catalog/hive.properties` разрешают операции на уровне connector, но **не разграничивают права между пользователями**. Все пользователи получают одинаковые разрешения.
+
+### Вариант 1: Без разграничения прав (текущая конфигурация)
+
+**Подходит для**: dev/test окружений, небольших команд с полным доверием.
+
+Все пользователи могут выполнять любые операции, разрешенные в `catalog/hive.properties`.
+
+**Плюсы**: Простота настройки, нет управления пользователями.
+**Минусы**: Нет разграничения прав, любой пользователь может удалить таблицы.
+
+---
+
+### Вариант 2: File-based Access Control (рекомендуется для production)
+
+**Подходит для**: production окружений, разграничение прав по ролям (admin, analyst, viewer).
+
+#### Шаг 1: Создать файл rules.json
+
+`config/access-control.json`:
+
+```json
+{
+  "catalogs": [
+    {
+      "catalog": "hive",
+      "allow": "all",
+      "privileges": [
+        {
+          "user": "admin",
+          "allow": "all"
+        },
+        {
+          "user": "trino",
+          "allow": "all"
+        },
+        {
+          "group": "analysts",
+          "allow": ["SELECT", "INSERT", "UPDATE", "DELETE"],
+          "privileges": [
+            {
+              "schema": ".*",
+              "table": ".*",
+              "allow": ["SELECT", "INSERT", "UPDATE", "DELETE"]
+            }
+          ]
+        },
+        {
+          "group": "viewers",
+          "allow": ["SELECT"],
+          "privileges": [
+            {
+              "schema": ".*",
+              "table": ".*",
+              "allow": ["SELECT"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "catalog": "iceberg",
+      "allow": "all",
+      "privileges": [
+        {
+          "user": "admin",
+          "allow": "all"
+        },
+        {
+          "user": "trino",
+          "allow": "all"
+        },
+        {
+          "group": "analysts",
+          "allow": ["SELECT", "INSERT", "UPDATE", "DELETE"],
+          "privileges": [
+            {
+              "schema": ".*",
+              "table": ".*",
+              "allow": ["SELECT", "INSERT", "UPDATE", "DELETE"]
+            }
+          ]
+        },
+        {
+          "group": "viewers",
+          "allow": ["SELECT"],
+          "privileges": [
+            {
+              "schema": ".*",
+              "table": ".*",
+              "allow": ["SELECT"]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+#### Шаг 2: Включить Access Control в config.properties
+
+Добавить в `config/config.properties`:
+
+```properties
+# === ACCESS CONTROL ===
+access-control.name=file
+security.config-file=/etc/trino/access-control.json
+```
+
+#### Шаг 3: Обновить Dockerfile
+
+Добавить копирование файла access control:
+
+```dockerfile
+# В Dockerfile после копирования config файлов:
+COPY --chown=trino:trino config/access-control.json /etc/trino/access-control.json
+```
+
+#### Шаг 4: Применить изменения
+
+```bash
+# 1. Создать файл access-control.json в config/
+cd ~/infrastructure/trino
+nano config/access-control.json
+# Скопировать содержимое из примера выше
+
+# 2. Добавить параметры в config/config.properties
+nano config/config.properties
+# Добавить:
+# access-control.name=file
+# security.config-file=/etc/trino/access-control.json
+
+# 3. Обновить Dockerfile (добавить COPY для access-control.json)
+nano Dockerfile
+
+# 4. Пересобрать образ
+docker build -t trino-datalake:latest .
+
+# 5. Перезапустить контейнер
+docker stop trino && docker rm trino
+docker run -d --name trino --restart unless-stopped -p 8080:8080 --env-file .env -e "s3.aws-access-key=${S3_ACCESS_KEY}" -e "s3.aws-secret-key=${S3_SECRET_KEY}" -v /mnt/data/trino:/data/trino trino-datalake:latest
+
+# 6. Проверить логи
+docker logs -f trino
+```
+
+#### Примеры использования
+
+```bash
+# Подключиться как admin (полные права)
+trino --server http://trino.company.com:8080 --catalog hive --schema aigt --user admin
+
+trino> DROP TABLE hive.aigt.test_table;  -- ✅ Разрешено
+
+# Подключиться как analyst (чтение + запись, но не DDL)
+trino --server http://trino.company.com:8080 --catalog hive --schema aigt --user analyst
+
+trino> SELECT * FROM hive.aigt.test_table;     -- ✅ Разрешено
+trino> INSERT INTO hive.aigt.test_table ...;  -- ✅ Разрешено
+trino> DROP TABLE hive.aigt.test_table;       -- ❌ Access Denied
+
+# Подключиться как viewer (только чтение)
+trino --server http://trino.company.com:8080 --catalog hive --schema aigt --user viewer
+
+trino> SELECT * FROM hive.aigt.test_table;     -- ✅ Разрешено
+trino> INSERT INTO hive.aigt.test_table ...;  -- ❌ Access Denied
+```
+
+#### Описание ролей
+
+| Роль | Права | Операции |
+|------|-------|----------|
+| `admin` | Полные права | CREATE, DROP, ALTER, SELECT, INSERT, UPDATE, DELETE |
+| `trino` | Полные права | CREATE, DROP, ALTER, SELECT, INSERT, UPDATE, DELETE |
+| `analysts` (группа) | Чтение + запись | SELECT, INSERT, UPDATE, DELETE (без DDL) |
+| `viewers` (группа) | Только чтение | SELECT |
+
+**⚠️ Важно**: File-based Access Control работает на уровне Trino, но **не интегрируется с LDAP/AD**. Для интеграции с корпоративным каталогом используйте LDAP authenticator (требует дополнительной настройки).
+
+---
+
+### Вариант 3: LDAP/AD интеграция (для крупных организаций)
+
+**Подходит для**: Крупные компании с Active Directory, централизованное управление пользователями.
+
+Требует дополнительной настройки LDAP authenticator. Подробности в официальной документации Trino: https://trino.io/docs/current/security/ldap.html
+
+---
+
+### Рекомендации
+
+1. **Dev/Test**: Используйте Вариант 1 (текущая конфигурация) для простоты
+2. **Production без LDAP**: Используйте Вариант 2 (File-based Access Control)
+3. **Production с AD**: Используйте Вариант 3 (LDAP integration)
+
+---
+
 ## Health Check
 
 ```bash
@@ -1495,6 +1722,73 @@ free -h
 # 3. Ошибка в конфигурационных файлах
 # Проверить синтаксис в config/*.properties
 ```
+
+### Access Denied при выполнении DROP TABLE / ALTER TABLE
+
+**Проблема**: При выполнении DDL операций (DROP TABLE, ALTER TABLE, и т.д.) появляется ошибка:
+```
+Access Denied for DROP_TABLE
+Access Denied for operation: DROP_TABLE
+```
+
+**Причина**: Hive connector по умолчанию не разрешает операции модификации структуры таблиц (особенно для external таблиц).
+
+**Решение 1: Добавить разрешения в Hive connector (быстрое решение)**
+
+Отредактируйте `config/catalog/hive.properties` и добавьте нужные параметры:
+
+```properties
+# === PERMISSIONS (полный набор) ===
+hive.non-managed-table-writes-enabled=true   # INSERT/UPDATE/DELETE в external таблицы
+hive.allow-drop-table=true                   # DROP TABLE
+hive.allow-rename-table=true                 # RENAME TABLE
+hive.allow-add-column=true                   # ADD COLUMN
+hive.allow-drop-column=true                  # DROP COLUMN
+hive.allow-rename-column=true                # RENAME COLUMN
+hive.allow-comment-table=true                # COMMENT ON TABLE
+hive.allow-comment-column=true               # COMMENT ON COLUMN
+```
+
+Затем пересоберите и перезапустите контейнер:
+
+```bash
+cd ~/infrastructure/trino
+docker build -t trino-datalake:latest .
+docker stop trino && docker rm trino
+docker run -d --name trino --restart unless-stopped -p 8080:8080 --env-file .env -e "s3.aws-access-key=${S3_ACCESS_KEY}" -e "s3.aws-secret-key=${S3_SECRET_KEY}" -v /mnt/data/trino:/data/trino trino-datalake:latest
+docker logs -f trino
+```
+
+**Решение 2: Настроить Access Control (для production)**
+
+Если вы используете File-based Access Control и хотите ограничить права для разных пользователей, убедитесь что:
+
+1. Пользователь указан в `access-control.json` с правом `"allow": "all"` или включен в нужные операции
+2. Connector разрешения установлены (см. Решение 1)
+
+Пример проверки:
+
+```bash
+# Проверить от какого пользователя вы подключаетесь
+trino --server http://trino.company.com:8080 --catalog hive --schema aigt --user admin
+
+# Или явно указать пользователя с полными правами
+trino --server http://trino.company.com:8080 --catalog hive --schema aigt --user trino
+```
+
+**Проверка конфигурации**:
+
+```bash
+# Проверить что параметры применились
+docker exec trino cat /etc/trino/catalog/hive.properties | grep allow
+
+# Должно вывести:
+# hive.allow-drop-table=true
+# hive.allow-rename-table=true
+# ...
+```
+
+**См. также**: [Access Control (управление доступом)](#access-control-управление-доступом)
 
 ### Configuration property was not used
 
