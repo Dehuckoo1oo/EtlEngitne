@@ -24,12 +24,15 @@
 jupyter/
 ├── Dockerfile
 ├── config/
-│   └── pip.conf
+│   ├── pip.conf
+│   └── minio-root-ca.crt      # Корневой сертификат MinIO
 ├── requirements.txt
 ├── .env.example
 ├── .gitlab-ci.yml
 └── README.md
 ```
+
+**Важно**: Файл `minio-root-ca.crt` должен содержать корневой сертификат вашего MinIO сервера в формате PEM.
 
 ---
 
@@ -42,9 +45,17 @@ FROM registry.company.com/jupyter/scipy-notebook:latest
 
 USER root
 
+# === УСТАНОВКА КОРНЕВОГО СЕРТИФИКАТА MINIO ===
+# Копируем корневой сертификат MinIO
+COPY config/minio-root-ca.crt /usr/local/share/ca-certificates/minio-root-ca.crt
+
+# Добавляем сертификат в системное хранилище
+RUN update-ca-certificates
+
 # Установка системных пакетов
 RUN apt-get update && apt-get install -y \
     curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Настроить pip для работы с Nexus PyPI
@@ -355,6 +366,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 # Подключение к MinIO через S3FS
+# После установки корневого сертификата SSL работает автоматически
 s3 = s3fs.S3FileSystem(
     key='jupyter',
     secret='<PASSWORD>',
@@ -506,6 +518,48 @@ try:
     print("Buckets:", [b['Name'] for b in response['Buckets']])
 except Exception as e:
     print(f"Error: {e}")
+```
+
+### SSL Certificate Error
+
+Если после установки корневого сертификата все еще появляются ошибки SSL:
+
+```python
+# Вариант 1: Проверить что сертификат установлен в системе
+import subprocess
+result = subprocess.run(['ls', '/usr/local/share/ca-certificates/'], capture_output=True, text=True)
+print("Installed certificates:", result.stdout)
+
+# Вариант 2: Явно указать путь к сертификату (если вариант 1 не помог)
+import os
+os.environ['REQUESTS_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
+os.environ['SSL_CERT_FILE'] = '/etc/ssl/certs/ca-certificates.crt'
+
+# Или для boto3
+import boto3
+
+s3_client = boto3.client(
+    's3',
+    endpoint_url='https://minio.company.com:9000',
+    aws_access_key_id='jupyter',
+    aws_secret_access_key='<PASSWORD>',
+    region_name='us-east-1',
+    verify='/etc/ssl/certs/ca-certificates.crt'  # Путь к CA bundle
+)
+
+# Вариант 3: Временно отключить проверку SSL (НЕ РЕКОМЕНДУЕТСЯ для production)
+import ssl
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+s3_client = boto3.client(
+    's3',
+    endpoint_url='https://minio.company.com:9000',
+    aws_access_key_id='jupyter',
+    aws_secret_access_key='<PASSWORD>',
+    region_name='us-east-1',
+    verify=False
+)
 ```
 
 ### Out of memory

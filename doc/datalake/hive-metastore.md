@@ -26,11 +26,14 @@ hive-metastore/
 ├── Dockerfile
 ├── config/
 │   ├── core-site.xml
-│   └── maven-settings.xml
+│   ├── maven-settings.xml
+│   └── minio-root-ca.crt      # Корневой сертификат MinIO
 ├── .env.example
 ├── .gitlab-ci.yml
 └── README.md
 ```
+
+**Важно**: Файл `minio-root-ca.crt` должен содержать корневой сертификат вашего MinIO сервера в формате PEM.
 
 ---
 
@@ -74,7 +77,20 @@ FROM registry.company.com/apache/hive:4.0.0
 
 USER root
 
-# Установить только netcat для healthcheck (wget больше не нужен)
+# === УСТАНОВКА КОРНЕВОГО СЕРТИФИКАТА MINIO ===
+# Копируем корневой сертификат MinIO
+COPY config/minio-root-ca.crt /tmp/minio-root-ca.crt
+
+# Добавляем сертификат в Java truststore
+RUN JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java)))) && \
+    keytool -import -trustcacerts -noprompt \
+      -alias minio-root-ca \
+      -file /tmp/minio-root-ca.crt \
+      -keystore $JAVA_HOME/lib/security/cacerts \
+      -storepass changeit && \
+    rm /tmp/minio-root-ca.crt
+
+# Установить только netcat для healthcheck
 RUN apt-get update && \
     apt-get install -y netcat-openbsd && \
     rm -rf /var/lib/apt/lists/*
@@ -121,6 +137,7 @@ ENTRYPOINT ["/entrypoint.sh"]
     <name>fs.s3a.path.style.access</name>
     <value>true</value>
   </property>
+  <!-- После добавления корневого сертификата в truststore можно оставить SSL включенным -->
   <property>
     <name>fs.s3a.connection.ssl.enabled</name>
     <value>true</value>

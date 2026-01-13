@@ -26,6 +26,8 @@ MVP: один worker, без кластера и балансировщиков.
 ```
 kafka-connect/
 ├── Dockerfile
+├── config/
+│   └── minio-root-ca.crt      # Корневой сертификат MinIO
 ├── connectors/
 │   ├── s3-sink-order-events.json
 │   ├── s3-sink-full-avro.json (пример)
@@ -35,7 +37,7 @@ kafka-connect/
 └── README.md
 ```
 
-**Примечание**: Директория `config/` не требуется, так как все параметры передаются через переменные окружения.
+**Важно**: Файл `minio-root-ca.crt` должен содержать корневой сертификат вашего MinIO сервера в формате PEM.
 
 ---
 
@@ -47,6 +49,19 @@ kafka-connect/
 FROM registry.company.com/confluentinc/cp-kafka-connect:7.5.0
 
 USER root
+
+# === УСТАНОВКА КОРНЕВОГО СЕРТИФИКАТА MINIO ===
+# Копируем корневой сертификат MinIO
+COPY config/minio-root-ca.crt /tmp/minio-root-ca.crt
+
+# Добавляем сертификат в Java truststore
+RUN JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java)))) && \
+    keytool -import -trustcacerts -noprompt \
+      -alias minio-root-ca \
+      -file /tmp/minio-root-ca.crt \
+      -keystore $JAVA_HOME/lib/security/cacerts \
+      -storepass changeit && \
+    rm /tmp/minio-root-ca.crt
 
 # Скачать и установить S3 Sink Connector из корпоративного репозитория
 RUN curl -o /tmp/confluentinc-kafka-connect-s3-11.0.8.zip \

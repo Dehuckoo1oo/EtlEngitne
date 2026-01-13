@@ -49,6 +49,7 @@ trino/
 │   ├── jvm.config
 │   ├── node.properties
 │   ├── log.properties
+│   ├── minio-root-ca.crt          # Корневой сертификат MinIO
 │   └── catalog/
 │       ├── iceberg.properties
 │       └── hive.properties
@@ -56,6 +57,8 @@ trino/
 ├── .gitlab-ci.yml
 └── README.md
 ```
+
+**Важно**: Файл `minio-root-ca.crt` должен содержать корневой сертификат вашего MinIO сервера в формате PEM.
 
 ---
 
@@ -67,6 +70,19 @@ trino/
 FROM registry.company.com/trinodb/trino:435
 
 USER root
+
+# === УСТАНОВКА КОРНЕВОГО СЕРТИФИКАТА MINIO ===
+# Копируем корневой сертификат MinIO
+COPY config/minio-root-ca.crt /tmp/minio-root-ca.crt
+
+# Добавляем сертификат в Java truststore
+RUN JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java)))) && \
+    keytool -import -trustcacerts -noprompt \
+      -alias minio-root-ca \
+      -file /tmp/minio-root-ca.crt \
+      -keystore $JAVA_HOME/lib/security/cacerts \
+      -storepass changeit && \
+    rm /tmp/minio-root-ca.crt
 
 # Создать директории
 RUN mkdir -p /data/trino && \
@@ -181,8 +197,9 @@ s3.endpoint=https://minio.company.com:9000
 s3.region=us-east-1
 s3.path-style-access=true
 
-# === SSL (для самоподписанных сертификатов) ===
-s3.ssl.enabled=false
+# === SSL ===
+# После добавления корневого сертификата в truststore можно оставить SSL включенным
+s3.ssl.enabled=true
 
 # Credentials будут переданы через environment variables
 # s3.aws-access-key=${ENV:S3_ACCESS_KEY}
@@ -206,8 +223,9 @@ s3.endpoint=https://minio.company.com:9000
 s3.region=us-east-1
 s3.path-style-access=true
 
-# === SSL (для самоподписанных сертификатов) ===
-s3.ssl.enabled=false
+# === SSL ===
+# После добавления корневого сертификата в truststore можно оставить SSL включенным
+s3.ssl.enabled=true
 
 # Credentials через environment variables
 ```
@@ -1174,44 +1192,17 @@ Caused by: PKIX path building failed: unable to find valid certification path to
 
 **Причина**: MinIO использует самоподписанный SSL сертификат, который не доверен JVM внутри контейнера Trino.
 
-**Решение 1: Отключить проверку SSL (рекомендуется для внутренних сетей)**
+**Решение (РЕКОМЕНДУЕТСЯ): Добавить корневой сертификат MinIO в truststore**
 
-Добавьте в `config/catalog/hive.properties` и `config/catalog/iceberg.properties`:
-
-```properties
-# === SSL (для самоподписанных сертификатов) ===
-s3.ssl.enabled=false
-```
-
-**Решение 2: Использовать HTTP вместо HTTPS**
-
-Измените endpoint в обоих catalog файлах:
-
-```properties
-# Было:
-s3.endpoint=https://minio.company.com:9000
-
-# Стало:
-s3.endpoint=http://minio.company.com:9000
-```
-
-**Решение 3: Добавить сертификат MinIO в truststore (для production)**
+1. Получите корневой сертификат MinIO в формате .crt или .pem
+2. Скопируйте его в директорию `trino/config/minio-root-ca.crt`
+3. Dockerfile уже содержит секцию для установки сертификата (см. раздел Dockerfile выше)
+4. Пересоберите образ:
 
 ```bash
-# Экспортировать сертификат MinIO
-openssl s_client -connect minio.company.com:9000 -showcerts < /dev/null 2>/dev/null | \
-  openssl x509 -outform PEM > minio-cert.pem
+# Убедитесь что сертификат на месте
+ls -la config/minio-root-ca.crt
 
-# Добавить в Dockerfile:
-COPY minio-cert.pem /tmp/minio-cert.pem
-RUN keytool -import -trustcacerts -alias minio-cert \
-    -file /tmp/minio-cert.pem \
-    -keystore $JAVA_HOME/lib/security/cacerts \
-    -storepass changeit -noprompt
-```
-
-**После изменений**:
-```bash
 # Пересобрать образ
 docker build -t trino-datalake:latest .
 
@@ -1221,6 +1212,35 @@ docker run -d --name trino ... trino-datalake:latest
 
 # Проверить логи
 docker logs -f trino
+```
+
+**Проверка установки сертификата**:
+
+```bash
+# Войти в контейнер
+docker exec -it trino bash
+
+# Проверить что сертификат добавлен
+keytool -list -keystore $JAVA_HOME/lib/security/cacerts -storepass changeit | grep minio-root-ca
+
+# Должно вывести:
+# minio-root-ca, <date>, trustedCertEntry,
+
+# Проверить подключение к MinIO
+curl -v https://minio.company.com:9000/minio/health/live
+# Не должно быть ошибок SSL
+```
+
+**Альтернативные решения (НЕ РЕКОМЕНДУЕТСЯ для production)**:
+
+Вариант 1: Отключить проверку SSL - добавьте в `config/catalog/*.properties`:
+```properties
+s3.ssl.enabled=false
+```
+
+Вариант 2: Использовать HTTP вместо HTTPS - измените endpoint:
+```properties
+s3.endpoint=http://minio.company.com:9000
 ```
 
 ### Query fails с OOM
