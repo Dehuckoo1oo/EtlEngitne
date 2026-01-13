@@ -198,8 +198,8 @@ s3.region=us-east-1
 s3.path-style-access=true
 
 # === SSL ===
-# После добавления корневого сертификата в truststore можно оставить SSL включенным
-s3.ssl.enabled=true
+# SSL работает автоматически через корневой сертификат, добавленный в Java truststore (см. Dockerfile)
+# Параметр s3.ssl.enabled не поддерживается при fs.native-s3.enabled=true
 
 # Credentials будут переданы через environment variables
 # s3.aws-access-key=${ENV:S3_ACCESS_KEY}
@@ -224,8 +224,8 @@ s3.region=us-east-1
 s3.path-style-access=true
 
 # === SSL ===
-# После добавления корневого сертификата в truststore можно оставить SSL включенным
-s3.ssl.enabled=true
+# SSL работает автоматически через корневой сертификат, добавленный в Java truststore (см. Dockerfile)
+# Параметр s3.ssl.enabled не поддерживается при fs.native-s3.enabled=true
 
 # Credentials через environment variables
 ```
@@ -1157,6 +1157,17 @@ free -h
 # Проверить синтаксис в config/*.properties
 ```
 
+### Configuration property was not used
+
+**Проблема**: При запуске Trino появляется ошибка:
+```
+ERROR: Configuration property 's3.ssl.enabled' was not used
+```
+
+**Причина**: Параметр `s3.ssl.enabled` не поддерживается в Trino 435 при использовании нативного S3 клиента (`fs.native-s3.enabled=true`).
+
+**Решение**: Удалите строку `s3.ssl.enabled=true` из файлов `config/catalog/iceberg.properties` и `config/catalog/hive.properties`. SSL будет работать автоматически на основе схемы endpoint (https://) и сертификатов в Java truststore.
+
 ### Cannot connect to Hive Metastore
 
 ```bash
@@ -1231,17 +1242,14 @@ curl -v https://minio.company.com:9000/minio/health/live
 # Не должно быть ошибок SSL
 ```
 
-**Альтернативные решения (НЕ РЕКОМЕНДУЕТСЯ для production)**:
+**Альтернативное решение (НЕ РЕКОМЕНДУЕТСЯ для production)**:
 
-Вариант 1: Отключить проверку SSL - добавьте в `config/catalog/*.properties`:
-```properties
-s3.ssl.enabled=false
-```
-
-Вариант 2: Использовать HTTP вместо HTTPS - измените endpoint:
+Использовать HTTP вместо HTTPS - измените endpoint в `config/catalog/*.properties`:
 ```properties
 s3.endpoint=http://minio.company.com:9000
 ```
+
+**Примечание**: Параметр `s3.ssl.enabled` не поддерживается в Trino 435 при использовании нативного S3 клиента (`fs.native-s3.enabled=true`). SSL работает автоматически на основе схемы endpoint (https://) и доверенных сертификатов в Java truststore.
 
 ### Query fails с OOM
 
