@@ -26,8 +26,9 @@ hive-metastore/
 ├── Dockerfile
 ├── config/
 │   ├── core-site.xml
+│   ├── hive-log4j2.properties  # Конфигурация логирования
 │   ├── maven-settings.xml
-│   └── minio-root-ca.crt      # Корневой сертификат MinIO
+│   └── minio-root-ca.crt       # Корневой сертификат MinIO
 ├── .env.example
 ├── .gitlab-ci.yml
 └── README.md
@@ -107,6 +108,9 @@ RUN ln -s /opt/hadoop/share/hadoop/tools/lib/hadoop-aws-3.3.4.jar /opt/hive/lib/
 # Конфиг S3
 COPY config/core-site.xml /opt/hadoop/etc/hadoop/core-site.xml
 
+# Конфиг логирования
+COPY config/hive-log4j2.properties /opt/hive/conf/hive-log4j2.properties
+
 USER hive
 
 # Healthcheck
@@ -175,6 +179,64 @@ ENTRYPOINT ["/entrypoint.sh"]
 ```
 
 **Примечание**: Замените `nexus.company.com` на реальный адрес вашего Nexus сервера.
+
+### hive-log4j2.properties
+
+`config/hive-log4j2.properties`:
+
+```properties
+# Root logger
+status = INFO
+name = HiveLog4j2
+packages = org.apache.hadoop.hive.ql.log
+
+# Console appender
+appender.console.type = Console
+appender.console.name = console
+appender.console.target = SYSTEM_ERR
+appender.console.layout.type = PatternLayout
+appender.console.layout.pattern = %d{ISO8601} %5p [%t] %c{2}: %m%n
+
+# Root logger configuration
+rootLogger.level = INFO
+rootLogger.appenderRefs = console
+rootLogger.appenderRef.console.ref = console
+
+# Hive Metastore
+logger.metastore.name = org.apache.hadoop.hive.metastore
+logger.metastore.level = INFO
+
+# S3A FileSystem - ВАЖНО для диагностики проблем с S3/MinIO
+logger.s3a.name = org.apache.hadoop.fs.s3a
+logger.s3a.level = DEBUG
+
+# AWS SDK - для детальной диагностики SSL и credentials
+logger.aws.name = com.amazonaws
+logger.aws.level = INFO
+
+# Hadoop FS
+logger.hadoop.name = org.apache.hadoop
+logger.hadoop.level = INFO
+
+# DataNucleus
+logger.datanucleus.name = DataNucleus
+logger.datanucleus.level = ERROR
+
+# Thrift
+logger.thrift.name = org.apache.thrift
+logger.thrift.level = WARN
+```
+
+**Важно**:
+- `logger.s3a.level = DEBUG` включает детальное логирование всех операций с S3/MinIO
+- Это поможет увидеть SSL ошибки, проблемы с credentials, timeouts и другие проблемы подключения
+- Для production можно вернуть на `INFO` после отладки
+
+**Для временной отладки** можно установить еще более подробное логирование:
+```properties
+logger.s3a.level = TRACE
+logger.aws.level = DEBUG
+```
 
 ---
 
@@ -510,6 +572,81 @@ Schema initialization failed!
      -e POSTGRES_PASSWORD=<SECURE_PASSWORD> \
      ...
    ```
+
+### Timeout при создании таблиц с location в S3
+
+**Симптомы**:
+```
+SocketTimeoutException: Read timed out
+Failed to create external path s3a://...
+```
+
+**Причина**: Hive Metastore не может подключиться к MinIO из-за проблем с SSL сертификатом или credentials
+
+**Диагностика через логи**:
+
+1. Убедитесь что `hive-log4j2.properties` скопирован в образ (см. раздел Dockerfile выше)
+
+2. Пересоберите образ и перезапустите контейнер:
+   ```bash
+   docker build -t hive-metastore:latest .
+   docker stop hive-metastore && docker rm hive-metastore
+   docker run -d --name hive-metastore ... hive-metastore:latest
+   ```
+
+3. Запустите просмотр логов в реальном времени:
+   ```bash
+   docker logs hive-metastore -f
+   ```
+
+4. В другом терминале попробуйте создать таблицу через Trino
+
+5. В логах должны появиться детальные сообщения от S3A:
+   ```
+   DEBUG o.a.hadoop.fs.s3a.S3AFileSystem: Opening 's3a://datalake/...'
+   DEBUG o.a.hadoop.fs.s3a.S3AFileSystem: Endpoint: https://minio.company.com:9000
+   DEBUG o.a.hadoop.fs.s3a.auth: Using credentials provider: EnvironmentVariableCredentialsProvider
+   DEBUG com.amazonaws.request: Sending Request: ...
+   ```
+
+**Типичные ошибки в логах и решения**:
+
+- **SSL certificate error**:
+  ```
+  javax.net.ssl.SSLHandshakeException: PKIX path building failed
+  ```
+  → Корневой сертификат MinIO не установлен. Проверьте что `minio-root-ca.crt` копируется в Dockerfile и добавляется в truststore.
+
+- **Access Denied (403)**:
+  ```
+  Status Code: 403, AWS Service: Amazon S3
+  ```
+  → Проблема с credentials или правами. Проверьте `AWS_ACCESS_KEY_ID` и `AWS_SECRET_ACCESS_KEY`, убедитесь что у пользователя есть права на запись в bucket.
+
+- **Connection timeout**:
+  ```
+  java.net.ConnectException: Connection timed out
+  ```
+  → MinIO недоступен или firewall блокирует. Проверьте доступность MinIO с сервера Hive Metastore.
+
+**Решение SSL проблемы** (если сертификат установлен, но не работает):
+
+Временно переключитесь на HTTP для тестирования:
+
+```bash
+# На сервере hive-metastore
+docker exec -it hive-metastore bash
+vi /opt/hadoop/etc/hadoop/core-site.xml
+
+# Измените:
+# https://minio.company.com:9000 → http://minio.company.com:9000
+# fs.s3a.connection.ssl.enabled true → false
+
+exit
+docker restart hive-metastore
+```
+
+Если после этого заработает - проблема точно в SSL сертификате.
 
 ---
 
