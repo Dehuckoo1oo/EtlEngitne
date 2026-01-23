@@ -23,16 +23,17 @@
 │ (1 instance) │
 └──────┬───────┘
        │
-       ↓
-┌──────────────┐
-│  PostgreSQL  │  Метаданные о таблицах
-│ (1 instance) │
-└──────┬───────┘
-       │
-       ↓
-┌──────────────┐
-│Hive Metastore│  Каталог таблиц Data Lake
-│ (1 instance) │
+       ├─────────────────────────────────────┐
+       ↓                                     ↓
+┌──────────────┐                    ┌──────────────┐
+│  PostgreSQL  │                    │    Spark     │  Распределенная обработка
+│ (1 instance) │                    │   Cluster    │  (master + workers)
+└──────┬───────┘                    └──────┬───────┘
+       │                                   │
+       ↓                                   │
+┌──────────────┐                           │
+│Hive Metastore│◄──────────────────────────┘
+│ (1 instance) │  Общий каталог таблиц
 └──────┬───────┘
        │
        ↓
@@ -43,7 +44,7 @@
        │
        ↓
 ┌──────────────┐
-│   Jupyter    │  Аналитика и визуализация
+│   Jupyter    │  Аналитика и визуализация (+ PySpark)
 │ (1 instance) │
 └──────────────┘
 ```
@@ -67,8 +68,10 @@ MVP-ограничения:
 | PostgreSQL | 5432 | postgres-metastore.company.com | ~10 GB | [postgres-metastore.md](postgres-metastore.md) |
 | Hive Metastore | 9083 | hive-metastore.company.com | Stateless | [hive-metastore.md](hive-metastore.md) |
 | Kafka Connect | 8083 | kafka-connect.company.com | Stateless | [kafka-connect.md](kafka-connect.md) |
+| Spark Master | 7077, 8080 | spark-master.company.com | Stateless | [spark.md](spark.md) |
+| Spark Worker | 8081 | spark-worker-N.company.com | Stateless | [spark.md](spark.md) |
 | Trino | 8080 | trino.company.com | Stateless | [trino.md](trino.md) |
-| Jupyter | 8888 | jupyter.company.com | ~100 GB | [jupyter.md](jupyter.md) |
+| Jupyter | 8888, 4040 | jupyter.company.com | ~100 GB | [jupyter.md](jupyter.md) |
 
 ---
 
@@ -107,7 +110,7 @@ systemctl start docker
 
 1. **MinIO** (независимый) → [Инструкция](minio.md)
    - Создать bucket `datalake`
-   - Создать пользователей: `hive-metastore`, `kafka-connect`, `trino`
+   - Создать пользователей: `hive-metastore`, `kafka-connect`, `trino`, `spark-user`
 
 2. **PostgreSQL** (независимый) → [Инструкция](postgres-metastore.md)
    - База данных `metastore_db` создается автоматически
@@ -120,11 +123,17 @@ systemctl start docker
 4. **Kafka Connect** (зависит от: Kafka, Schema Registry, MinIO) → [Инструкция](kafka-connect.md)
    - ⚠️ Убедитесь что Kafka и Schema Registry доступны
 
-5. **Trino** (зависит от: Hive Metastore, MinIO) → [Инструкция](trino.md)
+5. **Spark Cluster** (зависит от: Hive Metastore, MinIO) → [Инструкция](spark.md)
+   - ⚠️ Сначала развернуть Spark Master, затем Workers
+   - Интегрируется с Hive Metastore для общего каталога таблиц
+
+6. **Trino** (зависит от: Hive Metastore, MinIO) → [Инструкция](trino.md)
    - ⚠️ Убедитесь что Hive Metastore доступен
 
-6. **Jupyter** (зависит от: Trino, MinIO) → [Инструкция](jupyter.md)
-   - ⚠️ Убедитесь что Trino доступен
+7. **Jupyter** (зависит от: Trino, Spark, MinIO, Kafka, Schema Registry) → [Инструкция](jupyter.md)
+   - ⚠️ Убедитесь что Trino и Spark доступны
+   - Поддерживает PySpark для работы с кластером
+   - Поддерживает replay данных из MinIO обратно в Kafka
 
 Запуск каждого сервиса выполняется через GitLab CI/CD или вручную (варианты есть в сервисных инструкциях).
 
@@ -158,6 +167,25 @@ data-lake/
 │   │   └── s3-sink-order-events.json
 │   ├── .env.example
 │   └── .gitlab-ci.yml
+├── spark/
+│   ├── master/
+│   │   ├── Dockerfile
+│   │   ├── config/
+│   │   │   ├── spark-defaults.conf
+│   │   │   ├── spark-env.sh
+│   │   │   ├── core-site.xml
+│   │   │   └── hive-site.xml
+│   │   ├── .env.example
+│   │   └── .gitlab-ci.yml
+│   └── worker/
+│       ├── Dockerfile
+│       ├── config/
+│       │   ├── spark-defaults.conf
+│       │   ├── spark-env.sh
+│       │   ├── core-site.xml
+│       │   └── hive-site.xml
+│       ├── .env.example
+│       └── .gitlab-ci.yml
 ├── trino/
 │   ├── Dockerfile
 │   ├── config/
@@ -244,6 +272,25 @@ Deploy Service to TEST:
 
 ---
 
+## Совместимость версий JAR
+
+**КРИТИЧНО**: Версии JAR должны совпадать между всеми компонентами (Spark Master, Workers, Jupyter)!
+
+| Компонент | Версия | Назначение |
+|-----------|--------|------------|
+| Spark | 3.5.0 | Основной движок |
+| Hadoop AWS | 3.3.4 | S3A драйвер для MinIO |
+| AWS SDK Bundle | 1.12.262 | AWS API для S3A |
+| Delta Lake | 3.2.0 | ACID таблицы |
+| Scala | 2.12 | Версия для JAR |
+
+При обновлении версий — обновляйте синхронно во всех Dockerfile:
+- `data-lake/spark/master/Dockerfile`
+- `data-lake/spark/worker/Dockerfile`
+- `data-lake/jupyter/Dockerfile`
+
+---
+
 ## Конфигурация для больших данных (2+ TB)
 
 ### MinIO
@@ -271,10 +318,20 @@ kafka-configs.sh --bootstrap-server kafka-broker-1:9092 \
   --add-config retention.bytes=5497558138880,segment.bytes=1073741824,min.insync.replicas=2,max.message.bytes=10485760
 ```
 
+### Spark Cluster
+- **Master**: 4 cores, 8GB RAM
+- **Worker**: 16 cores, 64GB RAM (рекомендуется 3+ workers)
+- **Executor memory**: 4-12GB (зависит от ресурсов worker)
+- **Driver memory**: 2-4GB (в Jupyter)
+
 ### Trino
 - **Heap**: 32GB (`-Xmx32G -Xms32G`)
 - **Query memory**: 16GB per query
 - **Disk spill**: Включен для больших JOIN операций
+
+### Jupyter
+- **RAM**: 16GB (для driver PySpark)
+- **Disk**: 200GB SSD (для notebooks и кэша)
 
 ### PostgreSQL
 - **shared_buffers**: 8GB
@@ -300,11 +357,20 @@ nc -zv hive-metastore.company.com 9083
 # Kafka Connect
 curl -f http://kafka-connect.company.com:8083/
 
+# Spark Master
+curl -f http://spark-master.company.com:8080/
+
+# Spark Worker
+curl -f http://spark-worker-1.company.com:8081/
+
 # Trino
 curl -f http://trino.company.com:8080/v1/info
 
 # Jupyter
 curl -f http://jupyter.company.com:8888/api
+
+# Kafka topic (replay)
+kafka-topics.sh --bootstrap-server kafka-broker-1:9092 --describe --topic order-events-replay
 ```
 
 ---
@@ -355,6 +421,18 @@ PGPASSWORD='<PASSWORD>' psql -h postgres-metastore.company.com -U hive -d metast
 pg_isready -h postgres-metastore.company.com -U hive
 curl -f https://minio.company.com:9000/minio/health/live
 # Схема БД создается автоматически при первом запуске Hive Metastore
+```
+
+#### Kafka (топик для replay)
+```bash
+# Создать топик для replay данных из MinIO (отдельный от live данных)
+kafka-topics.sh --bootstrap-server kafka-broker-1:9092 \
+  --create \
+  --topic order-events-replay \
+  --partitions 12 \
+  --replication-factor 3 \
+  --config retention.ms=604800000 \
+  --config cleanup.policy=delete
 ```
 
 ### 4. Проверить работоспособность

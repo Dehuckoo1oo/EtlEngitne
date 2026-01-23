@@ -48,15 +48,17 @@ Data Lake представляет собой распределенную си�
 │Hive Metastore│  Сервис управления метаданными
 └──────┬───────┘
        │
-       ↓ SQL запросы
-┌──────────────┐
-│    Trino     │  Распределенный SQL query engine
-└──────┬───────┘
-       │
-       ↓ Анализ данных
-┌──────────────┐
-│   Jupyter    │  Аналитические ноутбуки
-└──────────────┘
+       ├─────────────────────────────────┐
+       ↓ SQL запросы                     ↓ Distributed Processing
+┌──────────────┐                ┌──────────────┐
+│    Trino     │                │    Spark     │  Batch/Stream обработка
+└──────┬───────┘                └──────┬───────┘
+       │                               │
+       └───────────────┬───────────────┘
+                       ↓ Анализ данных
+               ┌──────────────┐
+               │   Jupyter    │  Аналитические ноутбуки (SQL + PySpark)
+               └──────────────┘
 ```
 
 ---
@@ -83,12 +85,17 @@ Data Lake представляет собой распределенную си�
 - **Порты**: 8083 (REST API)
 - **Документация**: [kafka-connect.md](kafka-connect.md)
 
-### 5. Trino
+### 5. Spark Cluster
+- **Назначение**: Распределенная обработка больших данных (batch/stream)
+- **Порты**: 7077 (Master), 8080 (Master UI), 8081 (Worker UI), 4040 (App UI)
+- **Документация**: [spark.md](../spark.md)
+
+### 6. Trino
 - **Назначение**: Распределенный SQL движок для аналитических запросов
 - **Порты**: 8080 (HTTP API, Web UI)
 - **Документация**: [trino.md](trino.md)
 
-### 6. Jupyter
+### 7. Jupyter
 - **Назначение**: Интерактивная среда для анализа данных
 - **Порты**: 8888 (Web UI)
 - **Документация**: [jupyter.md](jupyter.md)
@@ -133,6 +140,18 @@ Data Lake представляет собой распределенную си�
 - **CPU**: 4 cores per node
 - **RAM**: 8GB per node
 - **Storage**: 100GB per node
+- **Network**: 10 Gbit/s
+
+#### Spark Master (1 узел)
+- **CPU**: 4 cores
+- **RAM**: 8GB
+- **Storage**: 50GB SSD
+- **Network**: 10 Gbit/s
+
+#### Spark Workers (3-10 узлов)
+- **CPU**: 16 cores per node
+- **RAM**: 64GB per node
+- **Storage**: 500GB SSD per node
 - **Network**: 10 Gbit/s
 
 #### Jupyter (1 узел)
@@ -232,10 +251,10 @@ Data Lake представляет собой распределенную си�
 
 ```
 MinIO ──────────────────┐
-                        ├──> Hive Metastore ──┐
-PostgreSQL Metastore ───┘                     ├──> Trino (Coordinator + Workers) ──> Jupyter
-                                              │
-Kafka + Schema Registry ──> Kafka Connect ────┘
+                        ├──> Hive Metastore ──┬──> Trino (Coordinator + Workers) ─┬──> Jupyter
+PostgreSQL Metastore ───┘                     │                                    │
+                                              └──> Spark (Master + Workers) ───────┘
+Kafka + Schema Registry ──> Kafka Connect ────────> MinIO
 ```
 
 ---
@@ -285,11 +304,15 @@ Kafka + Schema Registry ──> Kafka Connect ────┘
 
 | Сервис | Порт | Протокол | Источник | Назначение |
 |--------|------|----------|----------|------------|
-| MinIO API | 9000 | HTTP/S3 | Kafka Connect, Trino, Jupyter, Hive Metastore | Чтение/запись данных |
+| MinIO API | 9000 | HTTP/S3 | Kafka Connect, Trino, Spark, Jupyter, Hive Metastore | Чтение/запись данных |
 | MinIO Console | 9001 | HTTP/HTTPS | Администраторы (через LB) | Управление |
 | PostgreSQL | 5432 | PostgreSQL | Hive Metastore | Метаданные |
-| Hive Metastore | 9083 | Thrift | Trino, Kafka Connect (опц.) | Метаданные таблиц |
+| Hive Metastore | 9083 | Thrift | Trino, Spark, Kafka Connect (опц.) | Метаданные таблиц |
 | Kafka Connect | 8083 | HTTP | Администраторы, мониторинг | REST API |
+| Spark Master | 7077 | Spark Protocol | Spark Workers, Jupyter | Cluster communication |
+| Spark Master UI | 8080 | HTTP | Администраторы | Web UI |
+| Spark Worker UI | 8081 | HTTP | Администраторы | Web UI |
+| Spark App UI | 4040 | HTTP | Jupyter (локально) | Application UI |
 | Trino | 8080 | HTTP | Jupyter, клиенты, админы (через LB) | SQL queries, Web UI |
 | Jupyter | 8888 | HTTP | Аналитики (через LB) | Notebooks |
 
@@ -389,6 +412,13 @@ ALLOW TCP 9000 TO minio-nodes
 - **Performance**: Records processed/sec, bytes/sec
 - **Errors**: Failed tasks, error count
 - **Tool**: Kafka Connect REST API + JMX metrics
+
+#### Spark
+- **Cluster**: Active workers, executor count, available memory/cores
+- **Applications**: Running apps, completed apps, failed apps
+- **Jobs**: Active jobs, completed stages, failed tasks
+- **Performance**: Shuffle read/write, GC time, task duration
+- **Tool**: Spark Master UI, Spark History Server, JMX/Prometheus metrics
 
 #### Trino
 - **Queries**: Active queries, queued queries, completed queries
@@ -564,6 +594,7 @@ Stateless сервис, backup не требуется. Конфигурация
 | PostgreSQL | 30 минут | 1 минута (WAL) |
 | Hive Metastore | 15 минут | depends on PostgreSQL |
 | Kafka Connect | 15 минут | 0 (Kafka offsets) |
+| Spark | 15 минут | 0 (stateless) |
 | Trino | 10 минут | 0 (stateless) |
 | Jupyter | 30 минут | 1 час (Git backup) |
 
@@ -573,8 +604,9 @@ Stateless сервис, backup не требуется. Конфигурация
 2. **PostgreSQL Failure**: Promote standby to primary
 3. **Hive Metastore Failure**: Запустить новый инстанс (stateless)
 4. **Kafka Connect Failure**: Запустить новые workers, connectors восстановятся из Kafka topics
-5. **Trino Failure**: Запустить новые coordinator/workers
-6. **Jupyter Failure**: Восстановить из Git backup
+5. **Spark Failure**: Запустить новые Master/Workers (stateless, running jobs будут перезапущены)
+6. **Trino Failure**: Запустить новые coordinator/workers
+7. **Jupyter Failure**: Восстановить из Git backup
 
 ---
 
@@ -584,6 +616,7 @@ Stateless сервис, backup не требуется. Конфигурация
 - [PostgreSQL HA Setup](postgres-metastore.md#high-availability)
 - [Hive Metastore Production Guide](hive-metastore.md#production-deployment)
 - [Kafka Connect Production Configuration](kafka-connect.md#production-deployment)
+- [Spark Cluster Production Guide](../spark.md#порядок-развертывания)
 - [Trino Production Deployment](trino.md#production-deployment)
 - [Jupyter Multi-User Setup](jupyter.md#jupyterhub-deployment)
 
@@ -605,9 +638,11 @@ Stateless сервис, backup не требуется. Конфигурация
 - [ ] PostgreSQL primary + standby развернуты
 - [ ] Hive Metastore cluster развернут
 - [ ] Kafka Connect cluster развернут
+- [ ] Spark Master развернут
+- [ ] Spark Workers развернуты и зарегистрированы
 - [ ] Trino coordinator развернут
 - [ ] Trino workers развернуты и зарегистрированы
-- [ ] Jupyter развернут
+- [ ] Jupyter развернут (с PySpark интеграцией)
 
 ### Post-deployment
 - [ ] Интеграционные тесты выполнены

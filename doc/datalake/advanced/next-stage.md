@@ -15,11 +15,14 @@ MVP закрывает быстрый запуск и работу с 2+ TB. Д�
 - Kafka Connect cluster (2-3 узла)
 - Hive Metastore HA (2-3 узла + LB)
 - Trino coordinator + workers
+- Spark cluster (5-10 workers для 2+ TB данных)
 - PostgreSQL standby/replication + failover
 
 ### Мониторинг
 - Prometheus + Grafana + Alerting
 - JMX exporters (Kafka Connect, Hive Metastore, Trino)
+- Spark Metrics (Prometheus sink)
+- Spark History Server
 - Метрики MinIO/DB/Connectors
 
 ### Backup и Disaster Recovery
@@ -45,6 +48,7 @@ MVP закрывает быстрый запуск и работу с 2+ TB. Д�
 - [PostgreSQL Metastore Production Guide](postgres-metastore.md)
 - [Hive Metastore Production Guide](hive-metastore.md)
 - [Kafka Connect Production Guide](kafka-connect.md)
+- [Spark Production Guide](../spark.md)
 - [Trino Production Guide](trino.md)
 - [Jupyter Production Guide](jupyter.md)
 

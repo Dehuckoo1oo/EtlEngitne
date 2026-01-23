@@ -445,6 +445,96 @@ services:
       retries: 3
       start_period: 30s
 
+  # Spark Cluster
+  spark-master:
+    build:
+      context: ./data-lake/spark/master
+      dockerfile: Dockerfile
+    hostname: spark-master
+    ports:
+      - "7077:7077"
+      - "8085:8080"
+    networks:
+      - kafka
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    volumes:
+      - spark-events:/tmp/spark-events
+    depends_on:
+      minio:
+        condition: service_healthy
+      hive-metastore:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  spark-worker-1:
+    build:
+      context: ./data-lake/spark/worker
+      dockerfile: Dockerfile
+    hostname: spark-worker-1
+    ports:
+      - "8086:8081"
+    networks:
+      - kafka
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_CORES: 4
+      SPARK_WORKER_MEMORY: 4g
+      SPARK_WORKER_WEBUI_PORT: 8081
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    volumes:
+      - spark-worker-1-data:/tmp/spark-local
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  spark-worker-2:
+    build:
+      context: ./data-lake/spark/worker
+      dockerfile: Dockerfile
+    hostname: spark-worker-2
+    ports:
+      - "8087:8081"
+    networks:
+      - kafka
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_CORES: 4
+      SPARK_WORKER_MEMORY: 4g
+      SPARK_WORKER_WEBUI_PORT: 8081
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    volumes:
+      - spark-worker-2-data:/tmp/spark-local
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
   jupyter:
     build:
       context: ./data-lake/jupyter
@@ -452,6 +542,7 @@ services:
     hostname: jupyter
     ports:
       - "8888:8888"
+      - "4040:4040"
     networks:
       - kafka
     environment:
@@ -461,10 +552,17 @@ services:
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_ENDPOINT_URL: http://minio:9000
       AWS_REGION: us-east-1
+      # Spark configuration
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_HOME: /opt/spark
+      PYSPARK_PYTHON: python3
     volumes:
       - ./data-lake/jupyter/notebooks:/home/jovyan/work
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
+      spark-master:
+        condition: service_healthy
 
 #  ksqldb-server:
 #    image: confluentinc/ksqldb-server:latest
@@ -541,3 +639,9 @@ volumes:
     name: jupyter-data
   metastore-db:
     name: metastore-db
+  spark-events:
+    name: spark-events
+  spark-worker-1-data:
+    name: spark-worker-1-data
+  spark-worker-2-data:
+    name: spark-worker-2-data

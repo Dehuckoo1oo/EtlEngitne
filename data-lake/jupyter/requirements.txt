@@ -1,7 +1,22 @@
+# Data processing
 pyarrow>=14.0.0
 pandas>=2.0.0
+
+# S3/MinIO access
 s3fs>=2023.12.0
 boto3>=1.34.0
+
+# Visualization
 matplotlib>=3.8.0
 seaborn>=0.13.0
+
+# Jupyter
 jupyterlab>=4.0.0
+
+# PySpark (must match Spark cluster version)
+pyspark==3.5.0
+delta-spark==3.2.0
+findspark>=2.0.1
+
+# Kafka producer with Avro
+confluent-kafka[avro,schemaregistry]>=2.3.0

@@ -2,7 +2,10 @@
 
 ## Назначение
 
-Интерактивная среда для анализа данных Data Lake через SQL (Trino) и прямого чтения Parquet файлов из MinIO.
+Интерактивная среда для анализа данных Data Lake через:
+- **SQL** (Trino) — быстрые аналитические запросы
+- **PySpark** (Spark Cluster) — распределенная обработка больших данных
+- **Прямой доступ** (PyArrow/S3FS) — чтение Parquet файлов из MinIO
 
 ---
 
@@ -23,9 +26,10 @@
 ```
 jupyter/
 ├── Dockerfile
-├── config/
-│   ├── pip.conf
-│   └── minio-root-ca.crt      # Корневой сертификат MinIO
+├── conf/
+│   ├── spark-defaults.conf       # Конфигурация PySpark
+│   ├── pip.conf                  # Nexus PyPI proxy
+│   └── minio-root-ca.crt         # Корневой сертификат MinIO
 ├── requirements.txt
 ├── .env.example
 ├── .gitlab-ci.yml
@@ -46,30 +50,62 @@ FROM registry.company.com/jupyter/scipy-notebook:latest
 USER root
 
 # === УСТАНОВКА КОРНЕВОГО СЕРТИФИКАТА MINIO ===
-# Копируем корневой сертификат MinIO
-COPY config/minio-root-ca.crt /usr/local/share/ca-certificates/minio-root-ca.crt
-
-# Добавляем сертификат в системное хранилище
+COPY conf/minio-root-ca.crt /usr/local/share/ca-certificates/minio-root-ca.crt
 RUN update-ca-certificates
 
-# Установка системных пакетов
+# === УСТАНОВКА JAVA (требуется для PySpark) ===
 RUN apt-get update && apt-get install -y \
     curl \
     ca-certificates \
+    openjdk-11-jdk \
     && rm -rf /var/lib/apt/lists/*
 
-# Настроить pip для работы с Nexus PyPI
-COPY config/pip.conf /etc/pip.conf
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+
+# === УСТАНОВКА SPARK CLIENT ===
+# Версия должна совпадать с версией Spark Cluster
+ENV SPARK_VERSION=3.5.0
+ENV HADOOP_VERSION=3
+
+RUN curl -sL https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz | \
+    tar -xz -C /opt/ && \
+    mv /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} /opt/spark
+
+ENV SPARK_HOME=/opt/spark
+ENV PATH=$PATH:$SPARK_HOME/bin:$SPARK_HOME/sbin
+ENV PYTHONPATH=$SPARK_HOME/python:$SPARK_HOME/python/lib/py4j-0.10.9.7-src.zip
+ENV PYSPARK_PYTHON=python3
+ENV PYSPARK_DRIVER_PYTHON=python3
+
+# === JAR ЗАВИСИМОСТИ ===
+# Версии должны совпадать с Spark Cluster
+ENV HADOOP_AWS_VERSION=3.3.4
+ENV AWS_SDK_VERSION=1.12.262
+ENV DELTA_VERSION=3.2.0
+ENV SCALA_VERSION=2.12
+
+RUN curl -sL https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VERSION}/hadoop-aws-${HADOOP_AWS_VERSION}.jar \
+    -o /opt/spark/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar && \
+    curl -sL https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar \
+    -o /opt/spark/jars/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar && \
+    curl -sL https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_VERSION}/${DELTA_VERSION}/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
+    -o /opt/spark/jars/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar && \
+    curl -sL https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar \
+    -o /opt/spark/jars/delta-storage-${DELTA_VERSION}.jar
+
+# === SPARK КОНФИГУРАЦИЯ ===
+COPY conf/spark-defaults.conf /opt/spark/conf/spark-defaults.conf
+
+# === PIP КОНФИГУРАЦИЯ ===
+COPY conf/pip.conf /etc/pip.conf
 
 USER jovyan
 
-# Копировать requirements
+# === PYTHON ЗАВИСИМОСТИ ===
 COPY requirements.txt /tmp/
-
-# Установка Python пакетов через Nexus
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Создать рабочую директорию
+# Create notebooks directory
 RUN mkdir -p /home/jovyan/work
 
 WORKDIR /home/jovyan/work
@@ -78,7 +114,7 @@ WORKDIR /home/jovyan/work
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
   CMD curl -f http://localhost:8888/api || exit 1
 
-EXPOSE 8888
+EXPOSE 8888 4040
 
 CMD ["start-notebook.sh", "--NotebookApp.token=''", "--NotebookApp.password=''"]
 ```
@@ -91,7 +127,7 @@ CMD ["start-notebook.sh", "--NotebookApp.token=''", "--NotebookApp.password=''"]
 
 ### pip.conf
 
-`config/pip.conf`:
+`conf/pip.conf`:
 
 ```ini
 [global]
@@ -99,7 +135,80 @@ index-url = https://nexus.company.com/repository/pypi/simple
 trusted-host = nexus.company.com
 ```
 
-**Примечание**: Замените `nexus.company.com` на реальный адрес вашего Nexus сервера с PyPI proxy.
+### spark-defaults.conf
+
+`conf/spark-defaults.conf`:
+
+```properties
+# === SPARK CLUSTER CONNECTION ===
+spark.master=spark://spark-master.company.com:7077
+
+# === MEMORY CONFIGURATION (for driver on Jupyter) ===
+spark.driver.memory=2g
+spark.executor.memory=4g
+spark.executor.memoryOverhead=1g
+
+# Memory fractions
+spark.memory.fraction=0.4
+spark.memory.storageFraction=0.3
+
+# === PARALLELISM ===
+spark.sql.shuffle.partitions=200
+spark.default.parallelism=12
+spark.executor.cores=2
+
+# === ADAPTIVE QUERY EXECUTION ===
+spark.sql.adaptive.enabled=true
+spark.sql.adaptive.coalescePartitions.enabled=true
+spark.sql.adaptive.skewJoin.enabled=true
+
+# === COMPRESSION ===
+spark.sql.parquet.compression.codec=snappy
+spark.io.compression.codec=lz4
+spark.shuffle.compress=true
+spark.rdd.compress=true
+
+# === BROADCAST ===
+spark.sql.autoBroadcastJoinThreshold=10MB
+
+# === NETWORK & TIMEOUTS ===
+spark.network.timeout=600s
+spark.executor.heartbeatInterval=60s
+spark.sql.broadcastTimeout=600s
+
+# === S3A/MinIO Configuration ===
+spark.hadoop.fs.s3a.endpoint=https://minio.company.com:9000
+spark.hadoop.fs.s3a.access.key=${AWS_ACCESS_KEY_ID}
+spark.hadoop.fs.s3a.secret.key=${AWS_SECRET_ACCESS_KEY}
+spark.hadoop.fs.s3a.path.style.access=true
+spark.hadoop.fs.s3a.connection.ssl.enabled=true
+spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+spark.hadoop.fs.s3a.fast.upload=true
+spark.hadoop.fs.s3a.fast.upload.buffer=bytebuffer
+
+# === HIVE METASTORE ===
+spark.sql.catalogImplementation=hive
+spark.hadoop.hive.metastore.uris=thrift://hive-metastore.company.com:9083
+spark.sql.warehouse.dir=s3a://datalake/warehouse
+
+# === DELTA LAKE ===
+spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension
+spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
+
+# === SERIALIZATION ===
+spark.serializer=org.apache.spark.serializer.KryoSerializer
+spark.kryoserializer.buffer.max=256m
+
+# === UI ===
+spark.ui.enabled=true
+spark.ui.port=4040
+
+# === LOGGING (reduce noise) ===
+spark.sql.debug.maxToStringFields=100
+```
+
+**Примечание**: Для локальной разработки используйте `http://minio:9000` вместо `https://minio.company.com:9000`.
 
 ---
 
@@ -119,10 +228,18 @@ trino>=0.328.0
 sqlalchemy>=2.0.25
 sqlalchemy-trino>=0.5.0
 
+# === PySpark (версия должна совпадать с Spark Cluster) ===
+pyspark==3.5.0
+delta-spark==3.2.0
+findspark>=2.0.1
+
 # === Visualization ===
 matplotlib>=3.8.0
 seaborn>=0.13.0
 plotly>=5.18.0
+
+# === Kafka (опционально, для replay данных) ===
+confluent-kafka[avro,schemaregistry]>=2.3.0
 
 # === JupyterLab ===
 jupyterlab>=4.0.0
@@ -137,6 +254,7 @@ jupyterlab>=4.0.0
 ```bash
 # === JupyterLab ===
 JUPYTER_ENABLE_LAB=yes
+JUPYTER_TOKEN=datalake
 
 # === MinIO/S3 Access ===
 AWS_ACCESS_KEY_ID=jupyter
@@ -148,6 +266,10 @@ AWS_REGION=us-east-1
 TRINO_HOST=trino.company.com
 TRINO_PORT=8080
 TRINO_USER=analyst
+
+# === Spark Cluster ===
+SPARK_MASTER_URL=spark://spark-master.company.com:7077
+SPARK_HOME=/opt/spark
 ```
 
 ---
@@ -175,17 +297,12 @@ docker run -d \
   --name jupyter \
   --restart unless-stopped \
   -p 8888:8888 \
+  -p 4040:4040 \
   --env-file .env \
   -v /mnt/data/jupyter/notebooks:/home/jovyan/work \
   jupyter-datalake:latest
 
-# 5. Проверить логи
-docker logs -f jupyter
-
-# Найти URL с токеном (если есть):
-# http://127.0.0.1:8888/lab
-
-# 6. Health check
+# 5. Health check
 curl -f http://jupyter.company.com:8888/api
 ```
 
@@ -210,13 +327,9 @@ Deploy Jupyter to TEST:
     - SRV_APP="jupyter.company.com"
   script:
     - |
-      # Создаем переменную с названием образа
       ImageName=jupyter-datalake:latest
-
-      # Создаем переменную с названием контейнера
       ContainerName=jupyter
 
-      # Создаем скрипт деплоя
       echo "set -e" > build.sh
       cat >> build.sh << DEPLOY_SCRIPT
 
@@ -224,7 +337,7 @@ Deploy Jupyter to TEST:
       docker build -t ${ImageName} .
 
       echo 'Останавливаем и удаляем старый контейнер...'
-      docker stop ${ContainerName} && docker rm ${ContainerName} && echo 'Старый контейнер остановлен и удален.' || echo 'Старого контейнера нет, останавливать нечего.'
+      docker stop ${ContainerName} && docker rm ${ContainerName} || echo 'Контейнера нет'
 
       echo 'Создаем директории для notebooks...'
       mkdir -p /mnt/data/jupyter/notebooks
@@ -237,65 +350,46 @@ Deploy Jupyter to TEST:
         -e JUPYTER_TOKEN=${JUPYTER_TOKEN} \
         -e AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
         -e AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
-        -e MINIO_ENDPOINT=${MINIO_ENDPOINT} \
+        -e AWS_ENDPOINT_URL=${AWS_ENDPOINT_URL} \
+        -e SPARK_MASTER_URL=${SPARK_MASTER_URL} \
         -e TRINO_HOST=${TRINO_HOST} \
         -p 8888:8888 \
+        -p 4040:4040 \
         -v /mnt/data/jupyter/notebooks:/home/jovyan/work \
         -h ${SRV_APP} \
         ${ImageName}
 
-      echo "=========================================================================================="
       echo 'ГОТОВО!'
-      echo "=========================================================================================="
-      echo 'Проверяем состояние контейнера:'
       sleep 10
-      docker ps -a --filter name=${ContainerName}
-      echo '------------------------------------------------------------------------------------------'
-      echo 'Логи контейнера:'
-      docker logs ${ContainerName}
-      echo '------------------------------------------------------------------------------------------'
-      echo 'Проверяем доступность Jupyter API:'
-      sleep 5
-      curl -f http://localhost:8888/api || echo 'ВНИМАНИЕ: Jupyter API еще не доступен. Дождитесь полной инициализации.'
-      echo '------------------------------------------------------------------------------------------'
+      curl -f http://localhost:8888/api || echo 'Jupyter API еще не доступен'
 
       DEPLOY_SCRIPT
 
-      echo "Копируем папку на ${SRV_APP}..."
-      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
-      rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}
+      echo "Копируем на ${SRV_APP}..."
+      ssh svc_user@${SRV_APP} "mkdir -p ~/docker_build_${CI_COMMIT_SHORT_SHA}"
+      rsync -avz ./ svc_user@${SRV_APP}:~/docker_build_${CI_COMMIT_SHORT_SHA}
 
-      echo "Запускаем скрипт деплоя на ${SRV_APP}..."
-      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}/ && \
-        chmod u+x ./build.sh && ./build.sh"
+      echo "Запускаем деплой..."
+      ssh svc_user@${SRV_APP} "cd ~/docker_build_${CI_COMMIT_SHORT_SHA}/ && chmod +x ./build.sh && ./build.sh"
 
-      echo "Удаляем временные файлы с ${SRV_APP}..."
-      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_PROJECT_NAME}_${CI_COMMIT_SHORT_SHA}_${CI_JOB_ID}"
+      echo "Удаляем временные файлы..."
+      ssh svc_user@${SRV_APP} "rm -Rf ~/docker_build_${CI_COMMIT_SHORT_SHA}"
 ```
 
-**Настройка переменных окружения в GitLab**:
-
-В настройках CI/CD вашего проекта GitLab (`Settings > CI/CD > Variables`) добавьте:
+**GitLab CI/CD Variables** (`Settings > CI/CD > Variables`):
 
 | Переменная | Значение | Тип |
 |-----------|----------|-----|
 | `JUPYTER_TOKEN` | `<secure_token>` | Variable (Masked) |
 | `AWS_ACCESS_KEY_ID` | `jupyter` | Variable |
 | `AWS_SECRET_ACCESS_KEY` | `<password_from_minio>` | Variable (Masked) |
-| `MINIO_ENDPOINT` | `https://minio.company.com:9000` | Variable |
+| `AWS_ENDPOINT_URL` | `https://minio.company.com:9000` | Variable |
+| `SPARK_MASTER_URL` | `spark://spark-master.company.com:7077` | Variable |
 | `TRINO_HOST` | `trino.company.com` | Variable |
-
-**Примечание**:
-- Замените `your_runner_tag` на тег вашего GitLab Runner
-- Замените `svc_user` на пользователя для SSH подключения
-- Docker образ собирается локально на целевом сервере из скопированного проекта
-- Notebooks сохраняются в `/mnt/data/jupyter/notebooks` и персистентны между перезапусками
 
 ---
 
 ## Первоначальная настройка MinIO access
-
-Создать service account для Jupyter в MinIO (на машине minio.company.com):
 
 ```bash
 mc admin user add datalake jupyter <SECURE_PASSWORD>
@@ -308,6 +402,8 @@ cat > jupyter-policy.json <<EOF
       "Effect": "Allow",
       "Action": [
         "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
         "s3:ListBucket"
       ],
       "Resource": [
@@ -327,15 +423,113 @@ mc admin policy attach datalake jupyter-policy --user jupyter
 
 ## Примеры Notebooks
 
-### 1. Подключение к Trino
+### 1. Подключение к Spark Cluster (PySpark)
 
-Создать `01_trino_connection.ipynb`:
+Создать `01_pyspark_connection.ipynb`:
+
+```python
+# Инициализация PySpark
+import findspark
+findspark.init()
+
+from pyspark.sql import SparkSession
+
+# Создание сессии - конфигурация загружается из spark-defaults.conf
+spark = SparkSession.builder \
+    .appName("DataLake-Analysis") \
+    .getOrCreate()
+
+# Убрать лишние warnings
+spark.sparkContext.setLogLevel("ERROR")
+
+print(f"Spark version: {spark.version}")
+print(f"Spark master: {spark.sparkContext.master}")
+print(f"Application ID: {spark.sparkContext.applicationId}")
+print(f"\nSpark UI: http://localhost:4040")
+print(f"Spark Master UI: http://spark-master.company.com:8080")
+```
+
+### 2. Чтение Parquet из MinIO через PySpark
+
+```python
+# Чтение Parquet файлов
+df = spark.read.parquet("s3a://datalake/topics/order-events/")
+
+print(f"Total records: {df.count()}")
+df.printSchema()
+df.show(5)
+```
+
+### 3. SQL запросы через PySpark
+
+```python
+# Создание временного view
+df.createOrReplaceTempView("orders")
+
+# SQL запрос
+result = spark.sql("""
+    SELECT
+        dt,
+        COUNT(*) as order_count,
+        SUM(total_amount) as total_revenue
+    FROM orders
+    WHERE dt >= '2024-01-01'
+    GROUP BY dt
+    ORDER BY dt DESC
+    LIMIT 30
+""")
+result.show()
+```
+
+### 4. Работа с Hive Metastore
+
+```python
+# Просмотр баз данных (общие с Trino)
+spark.sql("SHOW DATABASES").show()
+
+# Просмотр таблиц
+spark.sql("SHOW TABLES IN default").show()
+
+# Создание managed таблицы
+spark.sql("""
+    CREATE TABLE IF NOT EXISTS default.daily_summary (
+        dt DATE,
+        order_count BIGINT,
+        total_revenue DECIMAL(18,2)
+    )
+    USING PARQUET
+    PARTITIONED BY (dt)
+    LOCATION 's3a://datalake/warehouse/daily_summary'
+""")
+```
+
+### 5. Delta Lake
+
+```python
+from delta.tables import DeltaTable
+
+# Запись Delta таблицы
+df.write \
+    .format("delta") \
+    .mode("overwrite") \
+    .partitionBy("dt") \
+    .save("s3a://datalake/delta/orders/")
+
+# Чтение Delta таблицы
+delta_df = spark.read.format("delta").load("s3a://datalake/delta/orders/")
+print(f"Delta table rows: {delta_df.count()}")
+
+# История изменений
+delta_table = DeltaTable.forPath(spark, "s3a://datalake/delta/orders/")
+delta_table.history().show()
+```
+
+### 6. Подключение к Trino
 
 ```python
 from trino.dbapi import connect
 import pandas as pd
 
-# Подключение к Trino
 conn = connect(
     host='trino.company.com',
     port=8080,
@@ -344,7 +538,6 @@ conn = connect(
     schema='default'
 )
 
-# Выполнить SQL запрос
 query = """
 SELECT * FROM iceberg.sales.orders
 WHERE dt = '2024-12-25'
@@ -353,20 +546,14 @@ LIMIT 100
 
 df = pd.read_sql(query, conn)
 print(df.head())
-print(f"Total rows: {len(df)}")
 ```
 
-### 2. Чтение Parquet из MinIO
-
-Создать `02_read_parquet.ipynb`:
+### 7. Чтение Parquet через PyArrow (без Spark)
 
 ```python
 import s3fs
 import pandas as pd
-import pyarrow.parquet as pq
 
-# Подключение к MinIO через S3FS
-# После установки корневого сертификата SSL работает автоматически
 s3 = s3fs.S3FileSystem(
     key='jupyter',
     secret='<PASSWORD>',
@@ -376,74 +563,114 @@ s3 = s3fs.S3FileSystem(
     }
 )
 
-# Чтение одного Parquet файла
-parquet_path = 's3://datalake/topics/order-events/calc_id=20241225-120000/dt=2024-12-25/hour=12/part-00001.snappy.parquet'
-
 df = pd.read_parquet(
-    parquet_path,
+    's3://datalake/topics/order-events/dt=2024-12-25/',
     filesystem=s3
 )
-
 print(df.head())
-print(df.info())
 ```
 
-### 3. Аналитика и визуализация
+---
 
-Создать `03_analytics.ipynb`:
+## Replay данных из MinIO в Kafka
+
+Jupyter поддерживает функционал replay — загрузка Parquet файлов из MinIO обратно в Kafka для повторной обработки.
+
+### Предварительные требования
+
+#### 1. Создать топик для replay
+
+**ВАЖНО**: Используйте отдельный топик для replay данных, чтобы не смешивать с live потоком.
+
+```bash
+# На машине с Kafka (или через docker exec)
+kafka-topics.sh --bootstrap-server kafka-broker-1:9092 \
+  --create \
+  --topic order-events-replay \
+  --partitions 12 \
+  --replication-factor 3 \
+  --config retention.ms=604800000 \
+  --config cleanup.policy=delete
+```
+
+Или через AKHQ/Kafka UI если доступен.
+
+#### 2. Создать пользователя в MinIO (если еще не создан)
+
+Пользователь `jupyter` должен иметь права на чтение данных из bucket `datalake`. См. раздел "Первоначальная настройка MinIO access" выше.
+
+### Использование replay notebook
+
+В Jupyter доступен notebook `replay-to-kafka.ipynb` со следующим функционалом:
+
+1. **Просмотр доступных партиций** — показывает все calc_id/dt/hour партиции в MinIO
+2. **Выбор партиции для загрузки** — указываете путь к нужной партиции
+3. **Чтение Parquet файлов** — загрузка данных через PyArrow
+4. **Отправка в Kafka** — Avro сериализация и отправка в топик `order-events-replay`
+
+### Пример использования
 
 ```python
-from trino.dbapi import connect
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+# Cell 1: Конфигурация
+KAFKA_BOOTSTRAP = "kafka-broker-1.company.com:9092,kafka-broker-2.company.com:9092,kafka-broker-3.company.com:9092"
+SCHEMA_REGISTRY = "http://schema-registry.company.com:8081"
+TARGET_TOPIC = "order-events-replay"
 
-# Подключение к Trino
-conn = connect(
-    host='trino.company.com',
-    port=8080,
-    user='analyst',
-    catalog='iceberg',
-    schema='sales'
-)
+# Cell 2: Показать доступные партиции
+# Выполните ячейку для просмотра списка партиций
 
-# Запрос данных за последние 30 дней
-query = """
-SELECT
-    dt,
-    COUNT(*) as order_count,
-    SUM(amount) as total_amount
-FROM iceberg.sales.orders
-WHERE dt >= CURRENT_DATE - INTERVAL '30' DAY
-GROUP BY dt
-ORDER BY dt
-"""
+# Cell 3: Указать партицию для replay
+PARTITION_PATH = "calc_id=20251224-180000/dt=2025-12-24/hour=18"
 
-df = pd.read_sql(query, conn)
-
-# Визуализация
-fig, axes = plt.subplots(2, 1, figsize=(12, 8))
-
-# График количества заказов
-axes[0].plot(df['dt'], df['order_count'], marker='o')
-axes[0].set_title('Orders per Day')
-axes[0].set_xlabel('Date')
-axes[0].set_ylabel('Order Count')
-axes[0].grid(True)
-
-# График суммы
-axes[1].plot(df['dt'], df['total_amount'], marker='o', color='green')
-axes[1].set_title('Total Amount per Day')
-axes[1].set_xlabel('Date')
-axes[1].set_ylabel('Amount ($)')
-axes[1].grid(True)
-
-plt.tight_layout()
-plt.show()
-
-# Статистика
-print(df.describe())
+# Cell 6: Запустить replay
+# Выполните ячейку для отправки данных в Kafka
 ```
+
+### Конфигурация для корпоративного сервера
+
+В notebook необходимо изменить следующие параметры:
+
+| Параметр | Описание | Пример |
+|----------|----------|--------|
+| `KAFKA_BOOTSTRAP` | Адреса Kafka брокеров | `kafka-broker-1.company.com:9092,...` |
+| `SCHEMA_REGISTRY` | URL Schema Registry | `http://schema-registry.company.com:8081` |
+| `TARGET_TOPIC` | Топик для replay данных | `order-events-replay` |
+| `s3fs endpoint_url` | URL MinIO | `https://minio.company.com:9000` |
+| `s3fs key/secret` | Credentials MinIO | Пользователь `jupyter` |
+
+### Проверка результата
+
+1. **AKHQ**: Откройте `http://akhq.company.com:8080`, перейдите в топик `order-events-replay`
+2. **kafka-console-consumer**:
+   ```bash
+   kafka-console-consumer.sh --bootstrap-server kafka-broker-1.company.com:9092 \
+     --topic order-events-replay \
+     --from-beginning \
+     --max-messages 5
+   ```
+
+### Troubleshooting replay
+
+#### SerializationError: Schema not found
+
+```bash
+# Проверить доступность Schema Registry
+curl http://schema-registry.company.com:8081/subjects
+
+# Проверить наличие схемы
+curl http://schema-registry.company.com:8081/subjects/order-events-value/versions/latest
+```
+
+#### Connection refused to Kafka
+
+```bash
+# Проверить доступность брокеров из контейнера Jupyter
+docker exec jupyter nc -zv kafka-broker-1.company.com 9092
+```
+
+#### SSL Certificate Error (MinIO)
+
+Убедитесь, что корневой сертификат MinIO добавлен в образ Jupyter. См. Dockerfile.
 
 ---
 
@@ -455,130 +682,133 @@ curl -f http://jupyter.company.com:8888/api
 
 # Docker healthcheck
 docker inspect jupyter | grep -A 5 Health
+
+# Проверка подключения к Spark Cluster
+curl -f http://spark-master.company.com:8080/
 ```
 
 ---
 
 ## Web UI
 
-URL: http://jupyter.company.com:8888
-
-В MVP версии аутентификация отключена для простоты.
-
-**Важно**: Авторизация пользователей — шаг 2 (см. [advanced/next-stage.md](advanced/next-stage.md)).
+| Сервис | URL | Описание |
+|--------|-----|----------|
+| JupyterLab | http://jupyter.company.com:8888 | Основной интерфейс |
+| Spark Application UI | http://jupyter.company.com:4040 | UI текущего Spark приложения |
+| Spark Master UI | http://spark-master.company.com:8080 | UI кластера Spark |
 
 ---
 
 ## Troubleshooting
 
+### ModuleNotFoundError: No module named 'pyspark'
+
+```python
+# Используйте findspark для инициализации
+import findspark
+findspark.init()
+
+from pyspark.sql import SparkSession
+```
+
+Если не помогает - проверить PYTHONPATH в Dockerfile:
+```dockerfile
+ENV PYTHONPATH=$SPARK_HOME/python:$SPARK_HOME/python/lib/py4j-0.10.9.7-src.zip
+```
+
+### WARN NativeCodeLoader: Unable to load native-hadoop library
+
+Это некритичное предупреждение. Чтобы скрыть:
+```python
+spark.sparkContext.setLogLevel("ERROR")
+```
+
+### Connection refused to spark-master
+
+```bash
+# Проверить доступность Spark Master
+nc -zv spark-master.company.com 7077
+
+# Проверить что Master запущен
+curl -f http://spark-master.company.com:8080/
+```
+
+### ClassNotFoundException: S3AFileSystem
+
+Проверить наличие JAR файлов:
+```bash
+docker exec jupyter ls -la /opt/spark/jars/ | grep -E "(hadoop-aws|aws-java-sdk)"
+
+# Должны быть:
+# hadoop-aws-3.3.4.jar
+# aws-java-sdk-bundle-1.12.262.jar
+```
+
+### Connection refused to hive-metastore
+
+```bash
+nc -zv hive-metastore.company.com 9083
+```
+
+### SSL Certificate Error (MinIO)
+
+```python
+# Проверить сертификаты
+import subprocess
+result = subprocess.run(['ls', '/usr/local/share/ca-certificates/'], capture_output=True, text=True)
+print("Certificates:", result.stdout)
+
+# Явно указать путь (если нужно)
+import os
+os.environ['REQUESTS_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
+```
+
+### Out of Memory на Driver
+
+```bash
+# Увеличить память driver
+# В spark-defaults.conf:
+spark.driver.memory=4g
+
+# Или при создании сессии:
+spark = SparkSession.builder \
+    .config("spark.driver.memory", "4g") \
+    .getOrCreate()
+```
+
 ### Jupyter не стартует
 
 ```bash
-# Проверить логи
 docker logs jupyter
 
 # Проверить порт
 netstat -tuln | grep 8888
 ```
 
-### Cannot connect to Trino
+---
 
-```python
-# В notebook проверить подключение
-from trino.dbapi import connect
+## Совместимость версий
 
-try:
-    conn = connect(
-        host='trino.company.com',
-        port=8080,
-        user='analyst'
-    )
-    print("Connection successful!")
-except Exception as e:
-    print(f"Error: {e}")
-```
+**ВАЖНО**: Версии должны совпадать между Jupyter и Spark Cluster!
 
-### Cannot read from MinIO
+| Компонент | Jupyter | Spark Cluster |
+|-----------|---------|---------------|
+| Spark | 3.5.0 | 3.5.0 |
+| Hadoop AWS | 3.3.4 | 3.3.4 |
+| AWS SDK | 1.12.262 | 1.12.262 |
+| Delta Lake | 3.2.0 | 3.2.0 |
+| Scala | 2.12 | 2.12 |
 
-```python
-# Проверить S3 credentials
-import boto3
-
-s3_client = boto3.client(
-    's3',
-    endpoint_url='https://minio.company.com:9000',
-    aws_access_key_id='jupyter',
-    aws_secret_access_key='<PASSWORD>',
-    region_name='us-east-1'
-)
-
-# Листинг buckets
-try:
-    response = s3_client.list_buckets()
-    print("Buckets:", [b['Name'] for b in response['Buckets']])
-except Exception as e:
-    print(f"Error: {e}")
-```
-
-### SSL Certificate Error
-
-Если после установки корневого сертификата все еще появляются ошибки SSL:
-
-```python
-# Вариант 1: Проверить что сертификат установлен в системе
-import subprocess
-result = subprocess.run(['ls', '/usr/local/share/ca-certificates/'], capture_output=True, text=True)
-print("Installed certificates:", result.stdout)
-
-# Вариант 2: Явно указать путь к сертификату (если вариант 1 не помог)
-import os
-os.environ['REQUESTS_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
-os.environ['SSL_CERT_FILE'] = '/etc/ssl/certs/ca-certificates.crt'
-
-# Или для boto3
-import boto3
-
-s3_client = boto3.client(
-    's3',
-    endpoint_url='https://minio.company.com:9000',
-    aws_access_key_id='jupyter',
-    aws_secret_access_key='<PASSWORD>',
-    region_name='us-east-1',
-    verify='/etc/ssl/certs/ca-certificates.crt'  # Путь к CA bundle
-)
-
-# Вариант 3: Временно отключить проверку SSL (НЕ РЕКОМЕНДУЕТСЯ для production)
-import ssl
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-s3_client = boto3.client(
-    's3',
-    endpoint_url='https://minio.company.com:9000',
-    aws_access_key_id='jupyter',
-    aws_secret_access_key='<PASSWORD>',
-    region_name='us-east-1',
-    verify=False
-)
-```
-
-### Out of memory
-
-```bash
-# Увеличить memory limit для контейнера
-docker update --memory 24g --memory-swap 24g jupyter
-
-# Или при запуске:
-docker run -d --name jupyter --memory 24g --memory-swap 24g ...
-```
+При обновлении версий — обновляйте синхронно во всех Dockerfile!
 
 ---
 
 ## Следующий шаг
 
-После развертывания всех сервисов:
-1. Проверить интеграцию между сервисами
-2. Создать тестовые таблицы и данные
-3. Запустить E2E тест (Kafka → MinIO → Trino → Jupyter)
+После развертывания:
+1. Проверить подключение к Spark Cluster
+2. Проверить доступ к MinIO (S3A)
+3. Проверить интеграцию с Hive Metastore
+4. Создать тестовые notebooks
 
 👉 [Продвинутые возможности](advanced/next-stage.md) - HA, мониторинг, авторизация
