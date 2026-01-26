@@ -256,12 +256,10 @@ EXPOSE 8081
 ```properties
 # === S3A/MinIO Configuration ===
 spark.hadoop.fs.s3a.endpoint=https://minio.company.com:9000
-spark.hadoop.fs.s3a.access.key=${AWS_ACCESS_KEY_ID}
-spark.hadoop.fs.s3a.secret.key=${AWS_SECRET_ACCESS_KEY}
 spark.hadoop.fs.s3a.path.style.access=true
 spark.hadoop.fs.s3a.connection.ssl.enabled=true
 spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
-spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.EnvironmentVariableCredentialsProvider
 
 # === Hive Metastore Integration ===
 spark.sql.catalogImplementation=hive
@@ -346,14 +344,6 @@ export SPARK_LOG_DIR=/opt/bitnami/spark/logs
         <value>https://minio.company.com:9000</value>
     </property>
     <property>
-        <name>fs.s3a.access.key</name>
-        <value>${env.AWS_ACCESS_KEY_ID}</value>
-    </property>
-    <property>
-        <name>fs.s3a.secret.key</name>
-        <value>${env.AWS_SECRET_ACCESS_KEY}</value>
-    </property>
-    <property>
         <name>fs.s3a.path.style.access</name>
         <value>true</value>
     </property>
@@ -367,7 +357,7 @@ export SPARK_LOG_DIR=/opt/bitnami/spark/logs
     </property>
     <property>
         <name>fs.s3a.aws.credentials.provider</name>
-        <value>org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</value>
+        <value>com.amazonaws.auth.EnvironmentVariableCredentialsProvider</value>
     </property>
     <property>
         <name>fs.s3a.block.size</name>
@@ -380,6 +370,8 @@ export SPARK_LOG_DIR=/opt/bitnami/spark/logs
     </property>
 </configuration>
 ```
+
+**Важно**: Credentials передаются через переменные окружения `AWS_ACCESS_KEY_ID` и `AWS_SECRET_ACCESS_KEY` (см. `.env.example`). Провайдер `EnvironmentVariableCredentialsProvider` автоматически читает их из окружения.
 
 ### hive-site.xml
 
@@ -483,11 +475,10 @@ spark.driver.extraJavaOptions=-XX:+UseG1GC -XX:G1HeapRegionSize=16m
 
 # === S3A TUNING (для MinIO) ===
 spark.hadoop.fs.s3a.endpoint=https://minio.company.com:9000
-spark.hadoop.fs.s3a.access.key=${AWS_ACCESS_KEY_ID}
-spark.hadoop.fs.s3a.secret.key=${AWS_SECRET_ACCESS_KEY}
 spark.hadoop.fs.s3a.path.style.access=true
 spark.hadoop.fs.s3a.connection.ssl.enabled=true
 spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.EnvironmentVariableCredentialsProvider
 spark.hadoop.fs.s3a.fast.upload=true
 spark.hadoop.fs.s3a.fast.upload.buffer=bytebuffer
 spark.hadoop.fs.s3a.multipart.size=104857600
