@@ -140,11 +140,11 @@ spark.executor.extraJavaOptions=-XX:+UseG1GC -XX:G1HeapRegionSize=16m -XX:Initia
 spark.driver.extraJavaOptions=-XX:+UseG1GC -XX:G1HeapRegionSize=16m
 
 # === S3A TUNING (для MinIO) ===
-spark.hadoop.fs.s3a.endpoint=http://minio.company.com:9000
+spark.hadoop.fs.s3a.endpoint=https://minio.company.com:9000
 spark.hadoop.fs.s3a.access.key=${AWS_ACCESS_KEY_ID}
 spark.hadoop.fs.s3a.secret.key=${AWS_SECRET_ACCESS_KEY}
 spark.hadoop.fs.s3a.path.style.access=true
-spark.hadoop.fs.s3a.connection.ssl.enabled=false
+spark.hadoop.fs.s3a.connection.ssl.enabled=true
 spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
 spark.hadoop.fs.s3a.fast.upload=true
 spark.hadoop.fs.s3a.fast.upload.buffer=bytebuffer
@@ -367,7 +367,8 @@ spark/
 │   │   ├── spark-defaults.conf
 │   │   ├── spark-env.sh
 │   │   ├── core-site.xml
-│   │   └── hive-site.xml
+│   │   ├── hive-site.xml
+│   │   └── minio-root-ca.crt
 │   ├── .env.example
 │   └── .gitlab-ci.yml
 ├── worker/
@@ -376,7 +377,8 @@ spark/
 │   │   ├── spark-defaults.conf
 │   │   ├── spark-env.sh
 │   │   ├── core-site.xml
-│   │   └── hive-site.xml
+│   │   ├── hive-site.xml
+│   │   └── minio-root-ca.crt
 │   ├── .env.example
 │   └── .gitlab-ci.yml
 └── README.md
@@ -391,7 +393,7 @@ spark/
 `spark/master/Dockerfile`:
 
 ```dockerfile
-FROM bitnamilegacy/spark:3.5.0
+FROM registry.company.com/bitnami/spark:3.5.0
 
 USER root
 
@@ -401,20 +403,29 @@ ENV AWS_SDK_VERSION=1.12.262
 ENV DELTA_VERSION=3.2.0
 ENV SCALA_VERSION=2.12
 
+# Nexus Maven URL (передается через --build-arg)
+ARG NEXUS_MAVEN_URL=https://nexus.company.com/repository/maven-public
+
 # Установка утилит
 RUN apt-get update && apt-get install -y curl netcat-openbsd && \
     rm -rf /var/lib/apt/lists/*
 
-# Скачивание JAR для S3A (MinIO)
-RUN curl -sL https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VERSION}/hadoop-aws-${HADOOP_AWS_VERSION}.jar \
+# Установка сертификата MinIO в Java truststore
+COPY config/minio-root-ca.crt /tmp/minio-root-ca.crt
+RUN keytool -import -trustcacerts -keystore $JAVA_HOME/lib/security/cacerts \
+    -storepass changeit -noprompt -alias minio-ca -file /tmp/minio-root-ca.crt && \
+    rm /tmp/minio-root-ca.crt
+
+# Скачивание JAR для S3A (MinIO) через Nexus
+RUN curl -sL ${NEXUS_MAVEN_URL}/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VERSION}/hadoop-aws-${HADOOP_AWS_VERSION}.jar \
     -o /opt/bitnami/spark/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar && \
-    curl -sL https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar \
+    curl -sL ${NEXUS_MAVEN_URL}/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar \
     -o /opt/bitnami/spark/jars/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar
 
-# Скачивание JAR для Delta Lake
-RUN curl -sL https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_VERSION}/${DELTA_VERSION}/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
+# Скачивание JAR для Delta Lake через Nexus
+RUN curl -sL ${NEXUS_MAVEN_URL}/io/delta/delta-spark_${SCALA_VERSION}/${DELTA_VERSION}/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
     -o /opt/bitnami/spark/jars/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar && \
-    curl -sL https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar \
+    curl -sL ${NEXUS_MAVEN_URL}/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar \
     -o /opt/bitnami/spark/jars/delta-storage-${DELTA_VERSION}.jar
 
 # Копирование конфигурации
@@ -438,7 +449,7 @@ EXPOSE 7077 8080
 `spark/worker/Dockerfile`:
 
 ```dockerfile
-FROM bitnamilegacy/spark:3.5.0
+FROM registry.company.com/bitnami/spark:3.5.0
 
 USER root
 
@@ -448,20 +459,29 @@ ENV AWS_SDK_VERSION=1.12.262
 ENV DELTA_VERSION=3.2.0
 ENV SCALA_VERSION=2.12
 
+# Nexus Maven URL (передается через --build-arg)
+ARG NEXUS_MAVEN_URL=https://nexus.company.com/repository/maven-public
+
 # Установка утилит
 RUN apt-get update && apt-get install -y curl netcat-openbsd && \
     rm -rf /var/lib/apt/lists/*
 
-# Скачивание JAR для S3A (MinIO)
-RUN curl -sL https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VERSION}/hadoop-aws-${HADOOP_AWS_VERSION}.jar \
+# Установка сертификата MinIO в Java truststore
+COPY config/minio-root-ca.crt /tmp/minio-root-ca.crt
+RUN keytool -import -trustcacerts -keystore $JAVA_HOME/lib/security/cacerts \
+    -storepass changeit -noprompt -alias minio-ca -file /tmp/minio-root-ca.crt && \
+    rm /tmp/minio-root-ca.crt
+
+# Скачивание JAR для S3A (MinIO) через Nexus
+RUN curl -sL ${NEXUS_MAVEN_URL}/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VERSION}/hadoop-aws-${HADOOP_AWS_VERSION}.jar \
     -o /opt/bitnami/spark/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar && \
-    curl -sL https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar \
+    curl -sL ${NEXUS_MAVEN_URL}/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar \
     -o /opt/bitnami/spark/jars/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar
 
-# Скачивание JAR для Delta Lake
-RUN curl -sL https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_VERSION}/${DELTA_VERSION}/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
+# Скачивание JAR для Delta Lake через Nexus
+RUN curl -sL ${NEXUS_MAVEN_URL}/io/delta/delta-spark_${SCALA_VERSION}/${DELTA_VERSION}/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
     -o /opt/bitnami/spark/jars/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar && \
-    curl -sL https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar \
+    curl -sL ${NEXUS_MAVEN_URL}/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar \
     -o /opt/bitnami/spark/jars/delta-storage-${DELTA_VERSION}.jar
 
 # Копирование конфигурации
@@ -490,11 +510,11 @@ EXPOSE 8081
 
 ```properties
 # === S3A/MinIO Configuration ===
-spark.hadoop.fs.s3a.endpoint=http://minio.company.com:9000
+spark.hadoop.fs.s3a.endpoint=https://minio.company.com:9000
 spark.hadoop.fs.s3a.access.key=${AWS_ACCESS_KEY_ID}
 spark.hadoop.fs.s3a.secret.key=${AWS_SECRET_ACCESS_KEY}
 spark.hadoop.fs.s3a.path.style.access=true
-spark.hadoop.fs.s3a.connection.ssl.enabled=false
+spark.hadoop.fs.s3a.connection.ssl.enabled=true
 spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
 spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
 
@@ -576,7 +596,7 @@ export SPARK_LOG_DIR=/opt/bitnami/spark/logs
 <configuration>
     <property>
         <name>fs.s3a.endpoint</name>
-        <value>http://minio.company.com:9000</value>
+        <value>https://minio.company.com:9000</value>
     </property>
     <property>
         <name>fs.s3a.access.key</name>
@@ -592,7 +612,7 @@ export SPARK_LOG_DIR=/opt/bitnami/spark/logs
     </property>
     <property>
         <name>fs.s3a.connection.ssl.enabled</name>
-        <value>false</value>
+        <value>true</value>
     </property>
     <property>
         <name>fs.s3a.impl</name>
@@ -659,9 +679,9 @@ SPARK_MASTER_HOST=spark-master.company.com
 SPARK_MASTER_PORT=7077
 SPARK_MASTER_WEBUI_PORT=8080
 
-# S3/MinIO credentials
-AWS_ACCESS_KEY_ID=spark-user
-AWS_SECRET_ACCESS_KEY=<SPARK_MINIO_PASSWORD>
+# S3/MinIO credentials (из GitLab CI/CD Variables)
+AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
 
 # Java settings
 SPARK_DAEMON_JAVA_OPTS=-Xmx4g
@@ -674,18 +694,165 @@ SPARK_DAEMON_JAVA_OPTS=-Xmx4g
 ```bash
 # Spark Worker settings
 SPARK_MODE=worker
-SPARK_MASTER_URL=spark://spark-master.company.com:7077
-SPARK_WORKER_CORES=14
-SPARK_WORKER_MEMORY=56g
+SPARK_MASTER_URL=spark://${SPARK_MASTER_HOST}:7077
+SPARK_WORKER_CORES=${SPARK_WORKER_CORES}
+SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY}
 SPARK_WORKER_WEBUI_PORT=8081
 
-# S3/MinIO credentials
-AWS_ACCESS_KEY_ID=spark-user
-AWS_SECRET_ACCESS_KEY=<SPARK_MINIO_PASSWORD>
+# S3/MinIO credentials (из GitLab CI/CD Variables)
+AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
 
 # Java settings
 SPARK_DAEMON_JAVA_OPTS=-Xmx4g
 ```
+
+---
+
+## GitLab CI/CD
+
+### .gitlab-ci.yml для Spark Master
+
+`spark/master/.gitlab-ci.yml`:
+
+```yaml
+variables:
+  IMAGE_NAME: spark-master
+  DOCKERFILE_PATH: Dockerfile
+
+stages:
+  - build
+  - deploy
+
+build:
+  stage: build
+  tags:
+    - docker
+  script:
+    - docker build
+      --build-arg NEXUS_MAVEN_URL=${NEXUS_MAVEN_URL}
+      -t ${CI_REGISTRY_IMAGE}/${IMAGE_NAME}:${CI_COMMIT_SHA}
+      -t ${CI_REGISTRY_IMAGE}/${IMAGE_NAME}:latest
+      -f ${DOCKERFILE_PATH} .
+    - docker push ${CI_REGISTRY_IMAGE}/${IMAGE_NAME}:${CI_COMMIT_SHA}
+    - docker push ${CI_REGISTRY_IMAGE}/${IMAGE_NAME}:latest
+  only:
+    changes:
+      - Dockerfile
+      - config/**/*
+      - .gitlab-ci.yml
+
+deploy:
+  stage: deploy
+  tags:
+    - spark-master
+  variables:
+    CONTAINER_NAME: spark-master
+  before_script:
+    # Проверка зависимостей
+    - echo "Checking MinIO availability..."
+    - nc -zv ${MINIO_HOST} 9000 || (echo "MinIO is not available" && exit 1)
+    - echo "Checking Hive Metastore availability..."
+    - nc -zv ${HIVE_METASTORE_HOST} 9083 || (echo "Hive Metastore is not available" && exit 1)
+  script:
+    - docker pull ${CI_REGISTRY_IMAGE}/${IMAGE_NAME}:latest
+    - docker stop ${CONTAINER_NAME} || true
+    - docker rm ${CONTAINER_NAME} || true
+    - docker run -d
+      --name ${CONTAINER_NAME}
+      --hostname spark-master
+      --restart=always
+      -e SPARK_MODE=master
+      -e AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      -e AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      -p 7077:7077
+      -p 8080:8080
+      ${CI_REGISTRY_IMAGE}/${IMAGE_NAME}:latest
+    - sleep 10
+    - curl -f http://localhost:8080/ || exit 1
+  only:
+    - main
+  when: manual
+```
+
+### .gitlab-ci.yml для Spark Worker
+
+`spark/worker/.gitlab-ci.yml`:
+
+```yaml
+variables:
+  IMAGE_NAME: spark-worker
+  DOCKERFILE_PATH: Dockerfile
+
+stages:
+  - build
+  - deploy
+
+build:
+  stage: build
+  tags:
+    - docker
+  script:
+    - docker build
+      --build-arg NEXUS_MAVEN_URL=${NEXUS_MAVEN_URL}
+      -t ${CI_REGISTRY_IMAGE}/${IMAGE_NAME}:${CI_COMMIT_SHA}
+      -t ${CI_REGISTRY_IMAGE}/${IMAGE_NAME}:latest
+      -f ${DOCKERFILE_PATH} .
+    - docker push ${CI_REGISTRY_IMAGE}/${IMAGE_NAME}:${CI_COMMIT_SHA}
+    - docker push ${CI_REGISTRY_IMAGE}/${IMAGE_NAME}:latest
+  only:
+    changes:
+      - Dockerfile
+      - config/**/*
+      - .gitlab-ci.yml
+
+deploy:
+  stage: deploy
+  tags:
+    - spark-worker
+  variables:
+    CONTAINER_NAME: spark-worker
+  before_script:
+    # Проверка зависимостей
+    - echo "Checking Spark Master availability..."
+    - nc -zv ${SPARK_MASTER_HOST} 7077 || (echo "Spark Master is not available" && exit 1)
+  script:
+    - docker pull ${CI_REGISTRY_IMAGE}/${IMAGE_NAME}:latest
+    - docker stop ${CONTAINER_NAME} || true
+    - docker rm ${CONTAINER_NAME} || true
+    - docker run -d
+      --name ${CONTAINER_NAME}
+      --hostname $(hostname)
+      --restart=always
+      -e SPARK_MODE=worker
+      -e SPARK_MASTER_URL=spark://${SPARK_MASTER_HOST}:7077
+      -e SPARK_WORKER_CORES=${SPARK_WORKER_CORES}
+      -e SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY}
+      -e AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      -e AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      -p 8081:8081
+      ${CI_REGISTRY_IMAGE}/${IMAGE_NAME}:latest
+    - sleep 10
+    - curl -f http://localhost:8081/ || exit 1
+  only:
+    - main
+  when: manual
+```
+
+### GitLab CI/CD Variables
+
+Настроить в GitLab → Settings → CI/CD → Variables:
+
+| Переменная | Значение | Тип |
+|-----------|----------|-----|
+| `AWS_ACCESS_KEY_ID` | `spark-user` | Variable |
+| `AWS_SECRET_ACCESS_KEY` | `<password>` | Variable (Masked) |
+| `NEXUS_MAVEN_URL` | `https://nexus.company.com/repository/maven-public` | Variable |
+| `SPARK_MASTER_HOST` | `spark-master.company.com` | Variable |
+| `SPARK_WORKER_CORES` | `14` | Variable |
+| `SPARK_WORKER_MEMORY` | `56g` | Variable |
+| `MINIO_HOST` | `minio.company.com` | Variable |
+| `HIVE_METASTORE_HOST` | `hive-metastore.company.com` | Variable |
 
 ---
 
@@ -694,17 +861,25 @@ SPARK_DAEMON_JAVA_OPTS=-Xmx4g
 ### Зависимости
 
 Spark требует:
-1. ✅ MinIO (S3 storage)
-2. ✅ Hive Metastore (каталог таблиц)
+1. ✅ MinIO (S3 storage) - [minio.md](minio.md)
+2. ✅ Hive Metastore (каталог таблиц) - [hive-metastore.md](hive-metastore.md)
+
+### Чек-лист перед развертыванием
+
+- [ ] MinIO доступен по адресу `https://minio.company.com:9000`
+- [ ] Hive Metastore доступен по адресу `thrift://hive-metastore.company.com:9083`
+- [ ] Сертификат MinIO (`minio-root-ca.crt`) получен и добавлен в `config/`
+- [ ] GitLab CI/CD Variables настроены (см. раздел выше)
+- [ ] Runner с тегом `spark-master` / `spark-worker` настроен на целевых машинах
 
 ### Этап 1: Создание пользователя MinIO для Spark
 
 ```bash
 # На машине с доступом к MinIO
-mc alias set datalake http://minio.company.com:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}
+mc alias set datalake https://minio.company.com:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}
 
 # Создать пользователя для Spark
-mc admin user add datalake spark-user <SPARK_MINIO_PASSWORD>
+mc admin user add datalake spark-user ${SPARK_MINIO_PASSWORD}
 
 # Создать политику доступа
 cat > /tmp/spark-policy.json << 'EOF'
@@ -733,15 +908,25 @@ mc admin policy create datalake spark-policy /tmp/spark-policy.json
 mc admin policy attach datalake spark-policy --user spark-user
 ```
 
-### Этап 2: Развертывание Spark Master
+### Этап 2: Развертывание через GitLab CI/CD (рекомендуется)
+
+1. Настроить GitLab CI/CD Variables (см. таблицу выше)
+2. Запустить pipeline для `spark/master` → job `deploy`
+3. Убедиться, что Master запустился: `curl -f http://spark-master.company.com:8080/`
+4. Запустить pipeline для `spark/worker` → job `deploy` на каждой ноде
+5. Проверить, что Workers подключились в Master UI
+
+### Этап 2 (альтернатива): Ручное развертывание Spark Master
 
 ```bash
 # На машине spark-master.company.com
 cd spark/master
 cp .env.example .env
-# Отредактировать .env - указать пароль MinIO
+# Отредактировать .env - заполнить переменные из GitLab CI/CD Variables
 
-docker build -t spark-master:latest .
+docker build \
+    --build-arg NEXUS_MAVEN_URL=${NEXUS_MAVEN_URL} \
+    -t spark-master:latest .
 
 docker run -d \
     --name spark-master \
@@ -753,15 +938,17 @@ docker run -d \
     spark-master:latest
 ```
 
-### Этап 3: Развертывание Spark Workers
+### Этап 3 (альтернатива): Ручное развертывание Spark Workers
 
 ```bash
 # На каждой машине spark-worker-N.company.com
 cd spark/worker
 cp .env.example .env
-# Отредактировать .env - указать пароль MinIO и адрес Master
+# Отредактировать .env - заполнить переменные из GitLab CI/CD Variables
 
-docker build -t spark-worker:latest .
+docker build \
+    --build-arg NEXUS_MAVEN_URL=${NEXUS_MAVEN_URL} \
+    -t spark-worker:latest .
 
 docker run -d \
     --name spark-worker \
@@ -778,6 +965,9 @@ docker run -d \
 # Проверить Master UI
 curl -f http://spark-master.company.com:8080/
 
+# Проверить количество workers через API
+curl -s http://spark-master.company.com:8080/json/ | jq '.workers | length'
+
 # Должны быть видны все workers
 # Статус: ALIVE, Workers: N
 ```
@@ -786,11 +976,9 @@ curl -f http://spark-master.company.com:8080/
 
 ## Интеграция с Jupyter
 
-Подробная документация по Jupyter с PySpark: [jupyter.md](jupyter.md)
+Подробная документация по настройке Jupyter с PySpark и подключению к Spark кластеру: [jupyter.md](jupyter.md)
 
-### Ключевые настройки Jupyter для работы со Spark
-
-**ВАЖНО**: Версии JAR должны совпадать между Jupyter и Spark Cluster!
+**Важно**: Версии JAR в Jupyter должны совпадать с версиями в Spark кластере:
 
 | Компонент | Версия |
 |-----------|--------|
@@ -798,105 +986,6 @@ curl -f http://spark-master.company.com:8080/
 | Hadoop AWS | 3.3.4 |
 | AWS SDK | 1.12.262 |
 | Delta Lake | 3.2.0 |
-| Scala | 2.12 |
-
-### Dockerfile (ключевые части)
-
-```dockerfile
-# Версия Spark должна совпадать с кластером
-ENV SPARK_VERSION=3.5.0
-
-# PYTHONPATH для нахождения PySpark
-ENV PYTHONPATH=$SPARK_HOME/python:$SPARK_HOME/python/lib/py4j-0.10.9.7-src.zip
-ENV PYSPARK_PYTHON=python3
-ENV PYSPARK_DRIVER_PYTHON=python3
-
-# JAR версии должны совпадать с кластером
-ENV HADOOP_AWS_VERSION=3.3.4
-ENV AWS_SDK_VERSION=1.12.262
-ENV DELTA_VERSION=3.2.0
-```
-
-### requirements.txt
-
-```txt
-# PySpark (версия должна совпадать с кластером)
-pyspark==3.5.0
-delta-spark==3.2.0
-findspark>=2.0.1
-```
-
-### spark-defaults.conf для Jupyter
-
-```properties
-# Подключение к кластеру
-spark.master=spark://spark-master.company.com:7077
-
-# Память для driver (на Jupyter)
-spark.driver.memory=2g
-spark.executor.memory=4g
-
-# S3A/MinIO
-spark.hadoop.fs.s3a.endpoint=https://minio.company.com:9000
-spark.hadoop.fs.s3a.path.style.access=true
-
-# Hive Metastore
-spark.sql.catalogImplementation=hive
-spark.hadoop.hive.metastore.uris=thrift://hive-metastore.company.com:9083
-
-# Delta Lake
-spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension
-spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
-
-# Logging (убрать warnings)
-spark.sql.debug.maxToStringFields=100
-```
-
-### Пример подключения из Jupyter
-
-```python
-import findspark
-findspark.init()
-
-from pyspark.sql import SparkSession
-
-# Конфигурация загружается из spark-defaults.conf
-spark = SparkSession.builder \
-    .appName("DataLake-Analysis") \
-    .getOrCreate()
-
-# Убрать warnings
-spark.sparkContext.setLogLevel("ERROR")
-
-# Чтение из MinIO
-df = spark.read.parquet("s3a://datalake/topics/order-events/")
-df.show(5)
-```
-
-### compose.yaml (для локальной разработки)
-
-```yaml
-jupyter:
-  build:
-    context: ./data-lake/jupyter
-    dockerfile: Dockerfile
-  hostname: jupyter
-  ports:
-    - "8888:8888"
-    - "4040:4040"
-  networks:
-    - kafka
-  environment:
-    JUPYTER_ENABLE_LAB: "yes"
-    JUPYTER_TOKEN: "datalake"
-    AWS_ACCESS_KEY_ID: minioadmin
-    AWS_SECRET_ACCESS_KEY: minioadmin
-    SPARK_MASTER_URL: spark://spark-master:7077
-  depends_on:
-    - minio
-    - hive-metastore
-    - spark-master
-```
 
 ---
 
@@ -912,10 +1001,11 @@ import os
 spark = SparkSession.builder \
     .appName("DataLake-Analysis") \
     .master("spark://spark-master.company.com:7077") \
-    .config("spark.hadoop.fs.s3a.endpoint", "http://minio.company.com:9000") \
+    .config("spark.hadoop.fs.s3a.endpoint", "https://minio.company.com:9000") \
     .config("spark.hadoop.fs.s3a.access.key", os.environ.get("AWS_ACCESS_KEY_ID")) \
     .config("spark.hadoop.fs.s3a.secret.key", os.environ.get("AWS_SECRET_ACCESS_KEY")) \
     .config("spark.hadoop.fs.s3a.path.style.access", "true") \
+    .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "true") \
     .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
     .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
     .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
@@ -1126,6 +1216,8 @@ spark.hadoop.fs.s3a.fast.upload.buffer=bytebuffer
     build:
       context: ./data-lake/spark/master
       dockerfile: Dockerfile
+      args:
+        NEXUS_MAVEN_URL: ${NEXUS_MAVEN_URL:-https://nexus.company.com/repository/maven-public}
     hostname: spark-master
     ports:
       - "7077:7077"
@@ -1134,8 +1226,8 @@ spark.hadoop.fs.s3a.fast.upload.buffer=bytebuffer
       - kafka
     environment:
       SPARK_MODE: master
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
     depends_on:
       - minio
       - hive-metastore
@@ -1149,6 +1241,8 @@ spark.hadoop.fs.s3a.fast.upload.buffer=bytebuffer
     build:
       context: ./data-lake/spark/worker
       dockerfile: Dockerfile
+      args:
+        NEXUS_MAVEN_URL: ${NEXUS_MAVEN_URL:-https://nexus.company.com/repository/maven-public}
     hostname: spark-worker-1
     ports:
       - "8086:8081"
@@ -1157,10 +1251,10 @@ spark.hadoop.fs.s3a.fast.upload.buffer=bytebuffer
     environment:
       SPARK_MODE: worker
       SPARK_MASTER_URL: spark://spark-master:7077
-      SPARK_WORKER_CORES: 4
-      SPARK_WORKER_MEMORY: 8g
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-4}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-8g}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
     depends_on:
       - spark-master
     healthcheck:
@@ -1173,6 +1267,8 @@ spark.hadoop.fs.s3a.fast.upload.buffer=bytebuffer
     build:
       context: ./data-lake/spark/worker
       dockerfile: Dockerfile
+      args:
+        NEXUS_MAVEN_URL: ${NEXUS_MAVEN_URL:-https://nexus.company.com/repository/maven-public}
     hostname: spark-worker-2
     ports:
       - "8087:8081"
@@ -1181,10 +1277,10 @@ spark.hadoop.fs.s3a.fast.upload.buffer=bytebuffer
     environment:
       SPARK_MODE: worker
       SPARK_MASTER_URL: spark://spark-master:7077
-      SPARK_WORKER_CORES: 4
-      SPARK_WORKER_MEMORY: 8g
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-4}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-8g}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
     depends_on:
       - spark-master
     healthcheck:
