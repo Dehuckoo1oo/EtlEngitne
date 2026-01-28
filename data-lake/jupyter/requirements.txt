@@ -13,10 +13,8 @@ seaborn>=0.13.0
 # Jupyter
 jupyterlab>=4.0.0
 
-# PySpark (must match Spark cluster version)
-pyspark==3.5.0
+# Delta Lake (must match Spark cluster version)
 delta-spark==3.2.0
-findspark>=2.0.1
 
 # Kafka producer with Avro
 confluent-kafka[avro,schemaregistry]>=2.3.0

@@ -45,37 +45,13 @@ jupyter/
 `jupyter/Dockerfile`:
 
 ```dockerfile
-FROM registry.company.com/jupyter/scipy-notebook:latest
+FROM quay.io/jupyter/pyspark-notebook:spark-3.5.3
 
 USER root
 
 # === УСТАНОВКА КОРНЕВОГО СЕРТИФИКАТА MINIO ===
 COPY conf/minio-root-ca.crt /usr/local/share/ca-certificates/minio-root-ca.crt
 RUN update-ca-certificates
-
-# === УСТАНОВКА JAVA (требуется для PySpark) ===
-RUN apt-get update && apt-get install -y \
-    curl \
-    ca-certificates \
-    openjdk-11-jdk \
-    && rm -rf /var/lib/apt/lists/*
-
-ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
-
-# === УСТАНОВКА SPARK CLIENT ===
-# Версия должна совпадать с версией Spark Cluster
-ENV SPARK_VERSION=3.5.0
-ENV HADOOP_VERSION=3
-
-RUN curl -sL https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz | \
-    tar -xz -C /opt/ && \
-    mv /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} /opt/spark
-
-ENV SPARK_HOME=/opt/spark
-ENV PATH=$PATH:$SPARK_HOME/bin:$SPARK_HOME/sbin
-ENV PYTHONPATH=$SPARK_HOME/python:$SPARK_HOME/python/lib/py4j-0.10.9.7-src.zip
-ENV PYSPARK_PYTHON=python3
-ENV PYSPARK_DRIVER_PYTHON=python3
 
 # === JAR ЗАВИСИМОСТИ ===
 # Версии должны совпадать с Spark Cluster
@@ -85,16 +61,16 @@ ENV DELTA_VERSION=3.2.0
 ENV SCALA_VERSION=2.12
 
 RUN curl -sL https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VERSION}/hadoop-aws-${HADOOP_AWS_VERSION}.jar \
-    -o /opt/spark/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar && \
+    -o ${SPARK_HOME}/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar && \
     curl -sL https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar \
-    -o /opt/spark/jars/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar && \
+    -o ${SPARK_HOME}/jars/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar && \
     curl -sL https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_VERSION}/${DELTA_VERSION}/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
-    -o /opt/spark/jars/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar && \
+    -o ${SPARK_HOME}/jars/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar && \
     curl -sL https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar \
-    -o /opt/spark/jars/delta-storage-${DELTA_VERSION}.jar
+    -o ${SPARK_HOME}/jars/delta-storage-${DELTA_VERSION}.jar
 
 # === SPARK КОНФИГУРАЦИЯ ===
-COPY conf/spark-defaults.conf /opt/spark/conf/spark-defaults.conf
+COPY conf/spark-defaults.conf ${SPARK_HOME}/conf/spark-defaults.conf
 
 # === PIP КОНФИГУРАЦИЯ ===
 COPY conf/pip.conf /etc/pip.conf
@@ -119,7 +95,7 @@ EXPOSE 8888 4040
 CMD ["start-notebook.sh", "--NotebookApp.token=''", "--NotebookApp.password=''"]
 ```
 
-**Примечание**: В MVP отключена аутентификация (`token=''`). Авторизация пользователей — шаг 2 (см. [advanced/next-stage.md](advanced/next-stage.md)).
+**Примечание**: Базовый образ `quay.io/jupyter/pyspark-notebook:spark-3.5.3` уже включает Java (JDK 17) и Spark 3.5.3. В MVP отключена аутентификация (`token=''`). Авторизация пользователей — шаг 2 (см. [advanced/next-stage.md](advanced/next-stage.md)).
 
 ---
 
@@ -228,10 +204,9 @@ trino>=0.328.0
 sqlalchemy>=2.0.25
 sqlalchemy-trino>=0.5.0
 
-# === PySpark (версия должна совпадать с Spark Cluster) ===
-pyspark==3.5.0
+# === Delta Lake (версия должна совпадать с Spark Cluster) ===
+# pyspark уже включен в базовый образ pyspark-notebook
 delta-spark==3.2.0
-findspark>=2.0.1
 
 # === Visualization ===
 matplotlib>=3.8.0
@@ -269,7 +244,7 @@ TRINO_USER=analyst
 
 # === Spark Cluster ===
 SPARK_MASTER_URL=spark://spark-master.company.com:7077
-SPARK_HOME=/opt/spark
+SPARK_HOME=/usr/local/spark
 ```
 
 ---
@@ -428,10 +403,6 @@ mc admin policy attach datalake jupyter-policy --user jupyter
 Создать `01_pyspark_connection.ipynb`:
 
 ```python
-# Инициализация PySpark
-import findspark
-findspark.init()
-
 from pyspark.sql import SparkSession
 
 # Создание сессии - конфигурация загружается из spark-defaults.conf
@@ -701,21 +672,6 @@ curl -f http://spark-master.company.com:8080/
 
 ## Troubleshooting
 
-### ModuleNotFoundError: No module named 'pyspark'
-
-```python
-# Используйте findspark для инициализации
-import findspark
-findspark.init()
-
-from pyspark.sql import SparkSession
-```
-
-Если не помогает - проверить PYTHONPATH в Dockerfile:
-```dockerfile
-ENV PYTHONPATH=$SPARK_HOME/python:$SPARK_HOME/python/lib/py4j-0.10.9.7-src.zip
-```
-
 ### WARN NativeCodeLoader: Unable to load native-hadoop library
 
 Это некритичное предупреждение. Чтобы скрыть:
@@ -737,7 +693,7 @@ curl -f http://spark-master.company.com:8080/
 
 Проверить наличие JAR файлов:
 ```bash
-docker exec jupyter ls -la /opt/spark/jars/ | grep -E "(hadoop-aws|aws-java-sdk)"
+docker exec jupyter ls -la $SPARK_HOME/jars/ | grep -E "(hadoop-aws|aws-java-sdk)"
 
 # Должны быть:
 # hadoop-aws-3.3.4.jar
@@ -789,17 +745,18 @@ netstat -tuln | grep 8888
 
 ## Совместимость версий
 
-**ВАЖНО**: Версии должны совпадать между Jupyter и Spark Cluster!
+**ВАЖНО**: Версии JAR-зависимостей должны совпадать между Jupyter и Spark Cluster!
 
-| Компонент | Jupyter | Spark Cluster |
-|-----------|---------|---------------|
-| Spark | 3.5.0 | 3.5.0 |
-| Hadoop AWS | 3.3.4 | 3.3.4 |
-| AWS SDK | 1.12.262 | 1.12.262 |
-| Delta Lake | 3.2.0 | 3.2.0 |
-| Scala | 2.12 | 2.12 |
+| Компонент | Jupyter | Spark Cluster | Источник |
+|-----------|---------|---------------|----------|
+| Spark | 3.5.3 | 3.5.0 | Базовый образ (совместим) |
+| Java | JDK 17 | JDK 11/17 | Базовый образ |
+| Hadoop AWS | 3.3.4 | 3.3.4 | JAR в Dockerfile |
+| AWS SDK | 1.12.262 | 1.12.262 | JAR в Dockerfile |
+| Delta Lake | 3.2.0 | 3.2.0 | JAR в Dockerfile |
+| Scala | 2.12 | 2.12 | Базовый образ |
 
-При обновлении версий — обновляйте синхронно во всех Dockerfile!
+При обновлении JAR-зависимостей — обновляйте синхронно во всех Dockerfile!
 
 ---
 
