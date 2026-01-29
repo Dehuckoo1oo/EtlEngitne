@@ -439,300 +439,83 @@
 
 
 
+Проблема в том, что SparkContext останавливается после создания сессии. Ошибка Cannot call methods on a stopped SparkContext явно на это указывает.
 
+  Основные причины
 
- Изменения:
-   1. data-lake/jupyter/Dockerfile — заменить базовый образ на jupyter/pyspark-notebook, добавить JAR для S3A и Delta Lake
-   2. data-lake/jupyter/requirements.txt — добавить delta-spark
-   3. data-lake/jupyter/conf/spark-defaults.conf — создать конфигурацию Spark с S3A, Hive Metastore и Delta Lake
-   4. compose.yaml — добавить порт 4040 (Spark UI) и volume для spark-defaults.conf
-   5. data-lake/jupyter/notebooks/spark-test.ipynb — тестовый notebook
-   6. doc/datalake/spark.md — документация
+  1. Spark Cluster недоступен или теряет соединение
 
- ● User approved Claude's plan
-   ⎿  Plan saved to: C:\Users\DeHuC\.claude\plans\prancy-percolating-hopcroft.md · /plan to edit
-      План: Добавление Apache Spark в Data Lake
+  Когда вы создаёте сессию с spark.master=spark://spark-master.company.com:7077, Jupyter подключается как driver к удалённому кластеру. При первом action (например count()) Spark пытается запустить executors, и если это не удаётся — контекст падает.
 
-      Цель
+  2. Executor'ы не могут достучаться до MinIO
 
-      Добавить Apache Spark в инфраструктуру data lake для работы через Jupyter notebooks с данными в MinIO (S3).
+  Даже если Jupyter видит MinIO, executor'ы на Spark Cluster тоже должны иметь:
+  - Те же JAR-файлы (hadoop-aws, aws-java-sdk-bundle)
+  - Доступ к MinIO по сети
+  - SSL сертификаты MinIO
 
-      Включено:
-      - ✅ Интеграция с Hive Metastore (общий каталог таблиц с Trino)
-      - ✅ Поддержка Delta Lake (ACID транзакции, time travel)
+  Диагностика
 
-      ---
-      Выбор подхода
+  Шаг 1: Проверить логи Spark
 
-      Рассмотренные варианты
-      ┌─────────┬─────────────────────────────────────────┬───────────┬───────────────────────┐
-      │ Вариант │                Описание                 │ Сложность │   Масштабируемость    │
-      ├─────────┼─────────────────────────────────────────┼───────────┼───────────────────────┤
-      │ A       │ Добавить PySpark в существующий Jupyter │ Средняя   │ Низкая (single node)  │
-      ├─────────┼─────────────────────────────────────────┼───────────┼───────────────────────┤
-      │ B       │ Заменить на jupyter/pyspark-notebook    │ Низкая    │ Низкая (single node)  │
-      ├─────────┼─────────────────────────────────────────┼───────────┼───────────────────────┤
-      │ C       │ Standalone Spark cluster + Jupyter      │ Высокая   │ Высокая (distributed) │
-      └─────────┴─────────────────────────────────────────┴───────────┴───────────────────────┘
-      Рекомендация: Вариант B - jupyter/pyspark-notebook
+  # В Jupyter - включить подробные логи ПЕРЕД созданием сессии
+  import os
+  os.environ['SPARK_SUBMIT_OPTS'] = '-Dlog4j.configuration=file:log4j.properties'
 
-      Причины:
-      - Официальный образ от Jupyter с предустановленным Spark
-      - Минимальные изменения в существующей инфраструктуре
-      - Достаточно для разработки и аналитики
-      - Легко мигрировать на кластер в будущем
+  # Или после создания сессии:
+  spark.sparkContext.setLogLevel("INFO")  # вместо ERROR
 
-      ---
-      Изменения в файлах
+  Шаг 2: Проверить подключение к Spark Master
 
-      1. Обновить data-lake/jupyter/Dockerfile
+  # Посмотреть статус
+  print(f"Master: {spark.sparkContext.master}")
+  print(f"Is stopped: {spark.sparkContext._jsc.sc().isStopped()}")
 
-      FROM jupyter/pyspark-notebook:latest
+  Шаг 3: Попробовать локальный режим
 
-      USER root
+  Чтобы исключить проблемы с кластером, создайте сессию в локальном режиме:
 
-      # Установка утилит
-      RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+  spark = SparkSession.builder \
+      .appName("DataLake-Analysis") \
+      .master("local[*]") \
+      .config("spark.hadoop.fs.s3a.endpoint", "https://minio.company.com:9000") \
+      .config("spark.hadoop.fs.s3a.access.key", "your_key") \
+      .config("spark.hadoop.fs.s3a.secret.key", "your_secret") \
+      .config("spark.hadoop.fs.s3a.path.style.access", "true") \
+      .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
+      .getOrCreate()
 
-      # Версии JAR (совместимые с Spark 3.5.x)
-      ENV HADOOP_AWS_VERSION=3.3.4
-      ENV AWS_SDK_VERSION=1.12.262
-      ENV DELTA_VERSION=3.2.0
-      ENV SCALA_VERSION=2.12
+  Если в локальном режиме работает — проблема в Spark Cluster.
 
-      # Скачивание JAR для S3A
-      RUN curl -sL https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VERSION}/hadoop-aws-${HADOOP_AWS_VERSION}.jar \
-          -o /usr/local/spark/jars/hadoop-aws-${HADOOP_AWS_VERSION}.jar && \
-          curl -sL https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar \
-          -o /usr/local/spark/jars/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar
+  Шаг 4: Проверить доступность MinIO с Spark Cluster
 
-      # Скачивание JAR для Delta Lake
-      RUN curl -sL https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_VERSION}/${DELTA_VERSION}/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
-          -o /usr/local/spark/jars/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar && \
-          curl -sL https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar \
-          -o /usr/local/spark/jars/delta-storage-${DELTA_VERSION}.jar
+  На машине Spark Worker выполните:
+  # Проверить сеть
+  nc -zv minio.company.com 9000
 
-      USER jovyan
+  # Проверить JAR-файлы
+  ls $SPARK_HOME/jars/ | grep -E "(hadoop-aws|aws-java-sdk)"
 
-      # Установка Python зависимостей
-      COPY requirements.txt /tmp/
-      RUN pip install --no-cache-dir -r /tmp/requirements.txt
+  Шаг 5: Проверить конфигурацию S3A на кластере
 
-      RUN mkdir -p /home/jovyan/work
-      WORKDIR /home/jovyan/work
+  На Spark Cluster тоже должны быть настроены credentials для MinIO. Либо через spark-defaults.conf, либо через переменные окружения.
 
-      2. Обновить data-lake/jupyter/requirements.txt
+  Вероятная причина
 
-      # Существующие зависимости
-      pyarrow>=14.0.0
-      pandas>=2.0.0
-      s3fs>=2023.12.0
-      boto3>=1.34.0
-      matplotlib>=3.8.0
-      seaborn>=0.13.0
-      jupyterlab>=4.0.0
+  Судя по симптомам (зависание при count(), падение контекста), скорее всего:
 
-      # Новые зависимости для Spark
-      delta-spark>=3.0.0
+  1. Jupyter подключается к Spark Master ✓
+  2. Spark Master пытается запустить executors
+  3. Executors не могут прочитать данные из MinIO (нет JAR/credentials/сертификатов)
+  4. Таймаут → SparkContext останавливается
 
-      3. Создать data-lake/jupyter/conf/spark-defaults.conf
+  Решение
 
-      # S3A/MinIO Configuration
-      spark.hadoop.fs.s3a.endpoint=http://minio:9000
-      spark.hadoop.fs.s3a.access.key=minioadmin
-      spark.hadoop.fs.s3a.secret.key=minioadmin
-      spark.hadoop.fs.s3a.path.style.access=true
-      spark.hadoop.fs.s3a.connection.ssl.enabled=false
-      spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+  Убедитесь, что на Spark Cluster (не только в Jupyter):
 
-      # Hive Metastore Integration
-      spark.sql.catalogImplementation=hive
-      spark.hadoop.hive.metastore.uris=thrift://hive-metastore:9083
+  1. Установлены JAR-файлы hadoop-aws и aws-java-sdk-bundle той же версии
+  2. Настроены credentials для MinIO (через spark-defaults.conf или env)
+  3. Добавлен SSL-сертификат MinIO в Java truststore
+  4. Сеть между Worker и MinIO открыта
 
-      # Performance Settings
-      spark.sql.parquet.compression.codec=snappy
-      spark.sql.shuffle.partitions=10
-      spark.driver.memory=2g
-      spark.executor.memory=2g
-
-      # Delta Lake (optional)
-      spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension
-      spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
-
-      4. Обновить сервис jupyter в compose.yaml
-
-        jupyter:
-          build:
-            context: ./data-lake/jupyter
-            dockerfile: Dockerfile
-          hostname: jupyter
-          ports:
-            - "8888:8888"
-            - "4040:4040"  # Spark UI
-          networks:
-            - kafka
-          environment:
-            JUPYTER_ENABLE_LAB: "yes"
-            JUPYTER_TOKEN: "datalake"
-            # S3/MinIO credentials
-            AWS_ACCESS_KEY_ID: minioadmin
-            AWS_SECRET_ACCESS_KEY: minioadmin
-            AWS_ENDPOINT_URL: http://minio:9000
-            AWS_REGION: us-east-1
-            # Spark settings
-            SPARK_HOME: /usr/local/spark
-          volumes:
-            - ./data-lake/jupyter/notebooks:/home/jovyan/work
-            - ./data-lake/jupyter/conf/spark-defaults.conf:/usr/local/spark/conf/spark-defaults.conf:ro
-          depends_on:
-            - minio
-            - hive-metastore
-
-      5. Создать data-lake/jupyter/notebooks/spark-test.ipynb (пример notebook)
-
-      Содержимое для тестирования:
-
-      # Cell 1: Создание Spark Session с Delta Lake
-      from pyspark.sql import SparkSession
-
-      spark = SparkSession.builder \
-          .appName("DataLake-Test") \
-          .enableHiveSupport() \
-          .getOrCreate()
-
-      print(f"Spark version: {spark.version}")
-      print(f"Spark UI: http://localhost:4040")
-
-      # Cell 2: Чтение Parquet из MinIO
-      df = spark.read.parquet("s3a://datalake/topics/order-events/")
-      df.printSchema()
-      print(f"Total rows: {df.count()}")
-
-      # Cell 3: SQL запрос
-      df.createOrReplaceTempView("orders")
-      result = spark.sql("""
-          SELECT dt, COUNT(*) as order_count
-          FROM orders
-          GROUP BY dt
-          ORDER BY dt
-      """)
-      result.show()
-
-      # Cell 4: Запись как Parquet
-      result.write \
-          .mode("overwrite") \
-          .parquet("s3a://datalake/analytics/daily_orders/")
-
-      # Cell 5: Проверка Hive Metastore интеграции
-      spark.sql("SHOW DATABASES").show()
-      spark.sql("SHOW TABLES").show()
-
-      # Cell 6: Создание Delta таблицы
-      df.write \
-          .format("delta") \
-          .mode("overwrite") \
-          .save("s3a://datalake/delta/orders/")
-
-      # Cell 7: Чтение Delta таблицы
-      delta_df = spark.read.format("delta").load("s3a://datalake/delta/orders/")
-      print(f"Delta table rows: {delta_df.count()}")
-
-      # Cell 8: Delta Time Travel (версионирование)
-      from delta.tables import DeltaTable
-      delta_table = DeltaTable.forPath(spark, "s3a://datalake/delta/orders/")
-      print(delta_table.history().show())
-
-      6. Создать документацию doc/datalake/spark.md
-
-      Документация должна содержать:
-      - Описание интеграции Spark
-      - Примеры использования
-      - Конфигурация S3A
-      - Troubleshooting
-
-      ---
-      Структура файлов после изменений
-
-      data-lake/
-      ├── jupyter/
-      │   ├── Dockerfile              # ИЗМЕНИТЬ
-      │   ├── requirements.txt        # ИЗМЕНИТЬ
-      │   ├── conf/
-      │   │   └── spark-defaults.conf # СОЗДАТЬ
-      │   └── notebooks/
-      │       ├── validate-parquet.ipynb
-      │       └── spark-test.ipynb    # СОЗДАТЬ
-      ├── hive-metastore/             # БЕЗ ИЗМЕНЕНИЙ
-      ├── kafka-connect/              # БЕЗ ИЗМЕНЕНИЙ
-      └── trino/                      # БЕЗ ИЗМЕНЕНИЙ
-
-      doc/datalake/
-      ├── spark.md                    # СОЗДАТЬ
-      └── ...
-
-      ---
-      Порядок выполнения
-
-      1. Создать директорию data-lake/jupyter/conf/
-      2. Создать файл spark-defaults.conf
-      3. Обновить Dockerfile
-      4. Обновить requirements.txt
-      5. Обновить compose.yaml (добавить volumes и порт 4040)
-      6. Создать тестовый notebook spark-test.ipynb
-      7. Создать документацию doc/datalake/spark.md
-
-      ---
-      Верификация
-
-      После деплоя проверить:
-
-      # 1. Пересобрать и запустить
-      docker compose build jupyter
-      docker compose up -d jupyter
-
-      # 2. Проверить логи
-      docker compose logs jupyter
-
-      # 3. Открыть Jupyter
-      # http://localhost:8888 (token: datalake)
-
-      # 4. Выполнить spark-test.ipynb
-
-      # 5. Проверить Spark UI
-      # http://localhost:4040
-
-      Критерии успеха:
-      - SparkSession создается без ошибок
-      - Чтение Parquet из s3a://datalake/ работает
-      - Запись Parquet в MinIO работает
-      - Подключение к Hive Metastore работает (SHOW DATABASES)
-      - Spark UI доступен на порту 4040
-      - Создание и чтение Delta таблицы работает
-      - Delta Time Travel (история версий) работает
-
-      ---
-      Альтернатива: Standalone Spark Cluster
-
-      Если в будущем понадобится масштабирование, можно добавить отдельные сервисы:
-
-        spark-master:
-          image: bitnami/spark:latest
-          environment:
-            - SPARK_MODE=master
-          ports:
-            - "7077:7077"
-            - "8085:8080"
-          networks:
-            - kafka
-
-        spark-worker:
-          image: bitnami/spark:latest
-          environment:
-            - SPARK_MODE=worker
-            - SPARK_MASTER_URL=spark://spark-master:7077
-          depends_on:
-            - spark-master
-          networks:
-            - kafka
-
-      Это можно добавить позже при необходимости.
+  Или используйте локальный режим local[*] для тестирования на самом Jupyter без кластера.
