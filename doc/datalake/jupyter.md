@@ -45,7 +45,7 @@ jupyter/
 `jupyter/Dockerfile`:
 
 ```dockerfile
-FROM quay.io/jupyter/pyspark-notebook:spark-3.5.3
+FROM jupyter/pyspark-notebook:spark-3.5.0
 
 USER root
 
@@ -95,7 +95,7 @@ EXPOSE 8888 4040
 CMD ["start-notebook.sh", "--NotebookApp.token=''", "--NotebookApp.password=''"]
 ```
 
-**Примечание**: Базовый образ `quay.io/jupyter/pyspark-notebook:spark-3.5.3` уже включает Java (JDK 17) и Spark 3.5.3. В MVP отключена аутентификация (`token=''`). Авторизация пользователей — шаг 2 (см. [advanced/next-stage.md](advanced/next-stage.md)).
+**Примечание**: Базовый образ `jupyter/pyspark-notebook:spark-3.5.0` уже включает Java (JDK 17) и Spark 3.5.0. В MVP отключена аутентификация (`token=''`). Авторизация пользователей — шаг 2 (см. [advanced/next-stage.md](advanced/next-stage.md)).
 
 ---
 
@@ -749,7 +749,7 @@ netstat -tuln | grep 8888
 
 | Компонент | Jupyter | Spark Cluster | Источник |
 |-----------|---------|---------------|----------|
-| Spark | 3.5.3 | 3.5.0 | Базовый образ (совместим) |
+| Spark | 3.5.0 | 3.5.0 | Базовый образ |
 | Java | JDK 17 | JDK 11/17 | Базовый образ |
 | Hadoop AWS | 3.3.4 | 3.3.4 | JAR в Dockerfile |
 | AWS SDK | 1.12.262 | 1.12.262 | JAR в Dockerfile |
