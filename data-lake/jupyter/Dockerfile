@@ -2,6 +2,11 @@ FROM jupyter/pyspark-notebook:spark-3.5.0
 
 USER root
 
+# Fix SPARK_HOME for pip-installed packages that expect /opt/spark
+# Base image uses /usr/local/spark, but delta-spark expects /opt/spark
+RUN mkdir -p /opt && ln -s /usr/local/spark /opt/spark
+ENV SPARK_HOME=/usr/local/spark
+
 # Download S3A and Delta Lake JARs (same versions as Spark cluster)
 ENV HADOOP_AWS_VERSION=3.3.4
 ENV AWS_SDK_VERSION=1.12.262
@@ -31,4 +36,4 @@ RUN mkdir -p /home/jovyan/work
 
 WORKDIR /home/jovyan/work
 
-EXPOSE 8888 4040
+EXPOSE 8888 4040 4041 4042

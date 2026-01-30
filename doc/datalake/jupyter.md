@@ -18,6 +18,9 @@
 | Storage | 200 GB SSD |
 | Network | 1 Gbit/s |
 | Hostname | jupyter.company.com |
+| Firewall | Открыты порты: 8888, 4040, 4041, 4042 |
+
+**Важно**: Hostname `jupyter.company.com` должен быть резолвим с Spark worker nodes для обратной связи executors → driver.
 
 ---
 
@@ -48,6 +51,11 @@ jupyter/
 FROM jupyter/pyspark-notebook:spark-3.5.0
 
 USER root
+
+# === FIX SPARK_HOME ===
+# Base image uses /usr/local/spark, but delta-spark expects /opt/spark
+RUN mkdir -p /opt && ln -s /usr/local/spark /opt/spark
+ENV SPARK_HOME=/usr/local/spark
 
 # === УСТАНОВКА КОРНЕВОГО СЕРТИФИКАТА MINIO ===
 COPY conf/minio-root-ca.crt /usr/local/share/ca-certificates/minio-root-ca.crt
@@ -90,10 +98,12 @@ WORKDIR /home/jovyan/work
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
   CMD curl -f http://localhost:8888/api || exit 1
 
-EXPOSE 8888 4040
+EXPOSE 8888 4040 4041 4042
 
 CMD ["start-notebook.sh", "--NotebookApp.token=''", "--NotebookApp.password=''"]
 ```
+
+**Примечание**: Порты 4041 (driver) и 4042 (blockManager) необходимы для обратной связи executors → driver в client mode.
 
 **Примечание**: Базовый образ `jupyter/pyspark-notebook:spark-3.5.0` уже включает Java (JDK 17) и Spark 3.5.0. В MVP отключена аутентификация (`token=''`). Авторизация пользователей — шаг 2 (см. [advanced/next-stage.md](advanced/next-stage.md)).
 
@@ -118,6 +128,14 @@ trusted-host = nexus.company.com
 ```properties
 # === SPARK CLUSTER CONNECTION ===
 spark.master=spark://spark-master.company.com:7077
+
+# === DRIVER NETWORK CONFIGURATION ===
+# КРИТИЧНО для client mode: executors должны подключаться обратно к driver
+# Укажите hostname/IP сервера Jupyter, который виден worker nodes
+spark.driver.host=jupyter.company.com
+spark.driver.bindAddress=0.0.0.0
+spark.driver.port=4041
+spark.blockManager.port=4042
 
 # === MEMORY CONFIGURATION (for driver on Jupyter) ===
 spark.driver.memory=2g
@@ -183,6 +201,121 @@ spark.ui.port=4040
 # === LOGGING (reduce noise) ===
 spark.sql.debug.maxToStringFields=100
 ```
+
+### Описание параметров spark-defaults.conf
+
+#### Подключение к кластеру
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.master` | `spark://spark-master:7077` | URL Spark Master. Формат `spark://host:port` для standalone кластера. Альтернативы: `local[*]` (локальный режим), `yarn`, `k8s://...` |
+
+#### Сетевая конфигурация Driver (критично для client mode)
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.driver.host` | `jupyter.company.com` | Hostname/IP сервера Jupyter, который виден с worker nodes. Executors используют этот адрес для обратного подключения к driver. **Без этого параметра задачи зависнут** |
+| `spark.driver.bindAddress` | `0.0.0.0` | IP-адрес для привязки сокета driver. `0.0.0.0` означает прослушивание на всех интерфейсах |
+| `spark.driver.port` | `4041` | Порт для RPC-коммуникации между driver и executors. Должен быть открыт в firewall и проброшен в Docker |
+| `spark.blockManager.port` | `4042` | Порт для передачи блоков данных между driver и executors. Используется для broadcast переменных и collect операций |
+
+#### Конфигурация памяти
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.driver.memory` | `2g` | Объем heap-памяти для JVM driver (Jupyter). Увеличьте при работе с большими collect() или broadcast |
+| `spark.executor.memory` | `4g` | Объем heap-памяти для каждого executor. Основная память для обработки данных |
+| `spark.executor.memoryOverhead` | `1g` | Дополнительная память вне heap (off-heap, Python, контейнерные накладные расходы). Формула: `max(384MB, 0.1 * executor.memory)` |
+| `spark.memory.fraction` | `0.4` | Доля heap-памяти executor для execution и storage (после вычета 300MB reserved). По умолчанию 0.6. Уменьшено для стабильности |
+| `spark.memory.storageFraction` | `0.3` | Доля от `memory.fraction` для хранения кэшированных RDD. Остальное — для shuffle и joins |
+
+#### Параллелизм
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.sql.shuffle.partitions` | `200` | Количество партиций после shuffle операций (joins, aggregations). По умолчанию 200. Для малых данных уменьшите до 20-50 |
+| `spark.default.parallelism` | `12` | Параллелизм для RDD операций без явного указания. Рекомендация: 2-3× количество cores в кластере |
+| `spark.executor.cores` | `2` | Количество CPU cores на каждый executor. Влияет на параллельные задачи внутри executor |
+
+#### Adaptive Query Execution (AQE)
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.sql.adaptive.enabled` | `true` | Включает адаптивную оптимизацию запросов на основе runtime статистики. Рекомендуется для Spark 3.x |
+| `spark.sql.adaptive.coalescePartitions.enabled` | `true` | Автоматически объединяет мелкие партиции после shuffle для уменьшения overhead |
+| `spark.sql.adaptive.skewJoin.enabled` | `true` | Оптимизирует joins при неравномерном распределении данных (data skew), разбивая большие партиции |
+
+#### Сжатие данных
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.sql.parquet.compression.codec` | `snappy` | Кодек сжатия для записи Parquet файлов. Варианты: `snappy` (быстрый), `gzip` (лучшее сжатие), `zstd`, `lz4`, `none` |
+| `spark.io.compression.codec` | `lz4` | Кодек для внутреннего сжатия (RDD сериализация). LZ4 — оптимальный баланс скорости и сжатия |
+| `spark.shuffle.compress` | `true` | Сжимать shuffle output файлы. Уменьшает disk I/O и network transfer |
+| `spark.rdd.compress` | `true` | Сжимать сериализованные RDD партиции. Уменьшает память за счёт CPU |
+
+#### Broadcast
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.sql.autoBroadcastJoinThreshold` | `10MB` | Максимальный размер таблицы для broadcast join. Таблицы меньше этого размера рассылаются всем executors. `-1` отключает |
+
+#### Сетевые таймауты
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.network.timeout` | `600s` | Таймаут для всех сетевых операций. Увеличьте при медленной сети или больших данных |
+| `spark.executor.heartbeatInterval` | `60s` | Интервал heartbeat от executor к driver. Должен быть < `network.timeout` |
+| `spark.sql.broadcastTimeout` | `600s` | Таймаут ожидания broadcast данных на executors. Увеличьте для больших broadcast таблиц |
+
+#### S3A/MinIO конфигурация
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.hadoop.fs.s3a.endpoint` | `https://minio:9000` | URL S3-совместимого хранилища (MinIO, Ceph, etc.) |
+| `spark.hadoop.fs.s3a.access.key` | `${AWS_ACCESS_KEY_ID}` | Access Key для аутентификации. Подставляется из переменной окружения |
+| `spark.hadoop.fs.s3a.secret.key` | `${AWS_SECRET_ACCESS_KEY}` | Secret Key для аутентификации. Подставляется из переменной окружения |
+| `spark.hadoop.fs.s3a.path.style.access` | `true` | Использовать path-style URLs (`endpoint/bucket/key`) вместо virtual-hosted (`bucket.endpoint/key`). Обязательно для MinIO |
+| `spark.hadoop.fs.s3a.connection.ssl.enabled` | `true` | Использовать HTTPS для подключения к S3. Для HTTP укажите `false` |
+| `spark.hadoop.fs.s3a.impl` | `...S3AFileSystem` | Класс реализации S3A FileSystem. Стандартное значение для Hadoop |
+| `spark.hadoop.fs.s3a.aws.credentials.provider` | `...SimpleAWSCredentialsProvider` | Провайдер credentials. Simple — из конфига, можно использовать `EnvironmentVariableCredentialsProvider` |
+| `spark.hadoop.fs.s3a.fast.upload` | `true` | Включает параллельную загрузку данных в S3. Значительно ускоряет запись больших файлов |
+| `spark.hadoop.fs.s3a.fast.upload.buffer` | `bytebuffer` | Тип буфера для fast upload: `bytebuffer` (heap), `array`, `disk`. ByteBuffer оптимален для памяти |
+
+#### Hive Metastore
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.sql.catalogImplementation` | `hive` | Использовать Hive Metastore для хранения метаданных таблиц. Альтернатива: `in-memory` |
+| `spark.hadoop.hive.metastore.uris` | `thrift://hive-metastore:9083` | URI Hive Metastore сервиса. Формат Thrift протокола |
+| `spark.sql.warehouse.dir` | `s3a://datalake/warehouse` | Директория по умолчанию для managed таблиц Hive |
+
+#### Delta Lake
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.sql.extensions` | `...DeltaSparkSessionExtension` | Регистрирует Delta Lake SQL расширения (MERGE, VACUUM, TIME TRAVEL и др.) |
+| `spark.sql.catalog.spark_catalog` | `...DeltaCatalog` | Заменяет стандартный каталог на Delta-aware версию для поддержки Delta таблиц |
+
+#### Сериализация
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.serializer` | `...KryoSerializer` | Сериализатор для RDD данных и shuffle. Kryo в 10× быстрее стандартного Java serializer |
+| `spark.kryoserializer.buffer.max` | `256m` | Максимальный размер буфера Kryo. Увеличьте при ошибках "buffer limit exceeded" |
+
+#### Spark UI
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.ui.enabled` | `true` | Включить веб-интерфейс Spark Application. Показывает stages, tasks, storage, executors |
+| `spark.ui.port` | `4040` | Порт для Spark UI. Если занят, автоматически пробует 4041, 4042... |
+
+#### Логирование
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `spark.sql.debug.maxToStringFields` | `100` | Максимальное количество полей в toString() для DataFrame. Уменьшает шум в логах для wide таблиц |
 
 **Примечание**: Для локальной разработки используйте `http://minio:9000` вместо `https://minio.company.com:9000`.
 
@@ -273,6 +406,8 @@ docker run -d \
   --restart unless-stopped \
   -p 8888:8888 \
   -p 4040:4040 \
+  -p 4041:4041 \
+  -p 4042:4042 \
   --env-file .env \
   -v /mnt/data/jupyter/notebooks:/home/jovyan/work \
   jupyter-datalake:latest
@@ -330,6 +465,8 @@ Deploy Jupyter to TEST:
         -e TRINO_HOST=${TRINO_HOST} \
         -p 8888:8888 \
         -p 4040:4040 \
+        -p 4041:4041 \
+        -p 4042:4042 \
         -v /mnt/data/jupyter/notebooks:/home/jovyan/work \
         -h ${SRV_APP} \
         ${ImageName}
@@ -668,9 +805,72 @@ curl -f http://spark-master.company.com:8080/
 | Spark Application UI | http://jupyter.company.com:4040 | UI текущего Spark приложения |
 | Spark Master UI | http://spark-master.company.com:8080 | UI кластера Spark |
 
+### Сетевые порты Jupyter
+
+| Порт | Назначение |
+|------|------------|
+| 8888 | JupyterLab Web UI |
+| 4040 | Spark Application UI |
+| 4041 | Spark Driver (для обратной связи executors → driver) |
+| 4042 | Spark Block Manager (для передачи данных) |
+
+**Важно**: Порты 4041 и 4042 должны быть доступны с worker nodes для работы Spark в client mode.
+
 ---
 
 ## Troubleshooting
+
+### Spark запросы выполняются бесконечно долго (зависают)
+
+**Симптомы**: `df.show()`, `df.count()` или любой action зависает без результата.
+
+**Причина**: Executors на worker nodes не могут подключиться обратно к driver (Jupyter) для отправки результатов. Это классическая проблема Spark в client mode.
+
+**Как работает Spark в client mode**:
+1. Jupyter (driver) отправляет задачу на Spark Master
+2. Master распределяет задачу на Workers
+3. Workers запускают executors
+4. Executors пытаются подключиться **ОБРАТНО** к driver для отправки результатов
+5. Без указания `spark.driver.host` executors не знают, куда подключаться
+6. Задача "зависает" бесконечно
+
+**Решение**: Убедитесь, что в `spark-defaults.conf` указаны параметры сети driver:
+
+```properties
+# КРИТИЧНО для client mode
+spark.driver.host=jupyter.company.com  # hostname, видимый worker nodes
+spark.driver.bindAddress=0.0.0.0
+spark.driver.port=4041
+spark.blockManager.port=4042
+```
+
+**Также проверьте**:
+1. Порты 4041 и 4042 открыты в firewall
+2. Порты проброшены в Docker (`-p 4041:4041 -p 4042:4042`)
+3. Hostname `jupyter.company.com` резолвится на worker nodes
+
+**Диагностика**:
+```bash
+# На worker node проверить доступность driver
+nc -zv jupyter.company.com 4041
+nc -zv jupyter.company.com 4042
+```
+
+---
+
+### Ошибки связанные с Dynamic Allocation
+
+Если на Spark кластере включен Dynamic Allocation (`spark.dynamicAllocation.enabled=true`), убедитесь что:
+
+1. **External Shuffle Service запущен на workers** — требуется для `spark.shuffle.service.enabled=true`
+2. В Jupyter конфиге явно отключите, если не используете:
+   ```properties
+   spark.dynamicAllocation.enabled=false
+   ```
+
+**Симптомы проблемы**: Executor'ы запускаются и сразу умирают, задачи перезапускаются.
+
+---
 
 ### WARN NativeCodeLoader: Unable to load native-hadoop library
 
