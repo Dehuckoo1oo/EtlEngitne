@@ -153,6 +153,10 @@
         "string"
       ],
       "default": null
+    },
+    {
+      "name": "prtNum",
+      "type": "int"
     }
   ]
 }

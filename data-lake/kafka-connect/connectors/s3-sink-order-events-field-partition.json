@@ -1,8 +1,8 @@
 {
-  "name": "s3-sink-order-events",
+  "name": "s3-sink-order-events-field-partition",
   "config": {
     "connector.class": "io.confluent.connect.s3.S3SinkConnector",
-    "tasks.max": "12",
+    "tasks.max": "4",
     "topics": "order-events",
 
     "s3.bucket.name": "datalake",
@@ -14,23 +14,23 @@
     "aws.access.key.id": "minioadmin",
     "aws.secret.access.key": "minioadmin",
 
-    "flush.size": "400000",
+    "flush.size": "10000",
     "rotate.interval.ms": "60000",
     "rotate.schedule.interval.ms": "60000",
 
     "storage.class": "io.confluent.connect.s3.storage.S3Storage",
     "format.class": "io.confluent.connect.s3.format.parquet.ParquetFormat",
     "parquet.codec": "snappy",
+    "parquet.block.size": "16777216",
+    "parquet.page.size": "524288",
 
     "schema.compatibility": "BACKWARD",
     "schema.generator.class": "io.confluent.connect.storage.hive.schema.DefaultSchemaGenerator",
 
-    "partitioner.class": "io.confluent.connect.storage.partitioner.TimeBasedPartitioner",
-    "path.format": "'calc_id='yyyyMMdd-HHmmss'/dt='yyyy-MM-dd'/hour='HH",
-    "partition.duration.ms": "3600000",
+    "partitioner.class": "io.confluent.connect.storage.partitioner.FieldPartitioner",
+    "partition.field.name": "prtNum",
     "locale": "en-US",
     "timezone": "UTC",
-    "timestamp.extractor": "Record",
 
     "topics.dir": "topics",
     "directory.delim": "/",

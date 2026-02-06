@@ -404,7 +404,7 @@ services:
       CONNECT_PRODUCER_MAX_REQUEST_SIZE: 10485760
       CONNECT_CONSUMER_MAX_POLL_RECORDS: 5000
       CONNECT_CONSUMER_MAX_PARTITION_FETCH_BYTES: 10485760
-      KAFKA_HEAP_OPTS: "-Xms4g -Xmx4g"
+      KAFKA_HEAP_OPTS: "-Xms22g -Xmx22g"
     volumes:
       - kafka-connect-data:/data
     depends_on:

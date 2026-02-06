@@ -109,6 +109,7 @@ public class KafkaToSqlIntegrationTest {
                 "loyalty_points_used INT," +
                 "gift_wrap BIT," +
                 "special_instructions NVARCHAR(800)," +
+                "prtNum INT," +
                 "bucket AS (ABS(CHECKSUM(order_id)) % 72) PERSISTED" +
                 ") ON ps_bucket(bucket)");
 
@@ -144,6 +145,7 @@ public class KafkaToSqlIntegrationTest {
                 "loyalty_points_used INT," +
                 "gift_wrap BIT," +
                 "special_instructions NVARCHAR(800)," +
+                "prtNum INT," +
                 "bucket AS (ABS(CHECKSUM(order_id)) % 72) PERSISTED" +
                 ") ON ps_bucket(bucket)");
 
@@ -179,7 +181,8 @@ public class KafkaToSqlIntegrationTest {
                 "discount_amount FLOAT," +
                 "loyalty_points_used INT," +
                 "gift_wrap BIT," +
-                "special_instructions NVARCHAR(800)" +
+                "special_instructions NVARCHAR(800)," +
+                "prtNum INT" +
                 ")");
 
         // Генерируем данные в памяти и загружаем через Bulk Copy
@@ -188,9 +191,12 @@ public class KafkaToSqlIntegrationTest {
         Instant now = Instant.now();
         for (int i = 1; i <= 1_000_000; i++) {
             String deliveryDate = "2025-06-10";
+            String billingCountry = "USA";
             if(i % 2 == 0) {
                 deliveryDate = null;
+                billingCountry = "FR";
             }
+            int prtNum = i % 72;
             EtlRecord record = new EtlRecord(now, "test", i);
             record.put("order_id", "ORD-" + i);
             record.put("customer_id", "CUST");
@@ -207,7 +213,7 @@ public class KafkaToSqlIntegrationTest {
             record.put("shipping_city", "LA");
             record.put("billing_city", "NYC");
             record.put("shipping_country", "USA");
-            record.put("billing_country", "USA");
+            record.put("billing_country", billingCountry);
             record.put("payment_method", "card");
             record.put("card_last_digits", "1234");
             record.put("card_expiry", "12/27");
@@ -223,6 +229,7 @@ public class KafkaToSqlIntegrationTest {
             record.put("loyalty_points_used", 20);
             record.put("gift_wrap", 1); // BIT в SQL Server
             record.put("special_instructions", "None");
+            record.put("prtNum", prtNum);
             records.add(record);
         }
 
@@ -269,13 +276,13 @@ public class KafkaToSqlIntegrationTest {
                 "shipping_address, billing_address, shipping_zip, billing_zip, shipping_city, billing_city, " +
                 "shipping_country, billing_country, payment_method, card_last_digits, card_expiry, ip_address, " +
                 "user_agent, campaign_id, referrer_url, device_type, browser, os, coupon_code, discount_amount, " +
-                "loyalty_points_used, gift_wrap, special_instructions) " +
+                "loyalty_points_used, gift_wrap, special_instructions, prtNum) " +
                 "SELECT " +
                 "order_id, customer_id, order_date, delivery_date, status, total_amount, currency, item_count, " +
                 "shipping_address, billing_address, shipping_zip, billing_zip, shipping_city, billing_city, " +
                 "shipping_country, billing_country, payment_method, card_last_digits, card_expiry, ip_address, " +
                 "user_agent, campaign_id, referrer_url, device_type, browser, os, coupon_code, discount_amount, " +
-                "loyalty_points_used, gift_wrap, special_instructions " +
+                "loyalty_points_used, gift_wrap, special_instructions, prtNum " +
                 "FROM SUPPORT.dbo.order_src_temp");
         Instant copyEnd = Instant.now();
         long copyDurationSeconds = Duration.between(copyStart, copyEnd).toSeconds();
